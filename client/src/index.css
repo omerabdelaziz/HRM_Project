@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Aziz HRM design tokens (RGB triples so Tailwind can apply opacity).
+   Brand: navy #102A43 · royal blue #2563EB · cyan #38BDF8 · background #F5F7FB · text #1E293B */
+:root {
+  --bg: 245 247 251;
+  --surface: 255 255 255;
+  --subtle: 241 245 249;
+  --muted: 226 232 240;
+  --line: 226 232 240;
+  --ink: 30 41 59;
+  --ink-2: 71 85 105;
+  --ink-3: 100 116 139;
+  --primary: 37 99 235;
+  --primary-fg: 255 255 255;
+  --primary-soft: 239 246 255;
+  --primary-ink: 29 78 216;
+  --navy: 16 42 67;
+  --navy-2: 25 56 89;
+  --accent: 56 189 248;
+  --success: 22 163 74;
+  --success-soft: 240 253 244;
+  --success-ink: 21 128 61;
+  --warning: 245 158 11;
+  --warning-soft: 255 251 235;
+  --warning-ink: 180 83 9;
+  --danger: 220 38 38;
+  --danger-soft: 254 242 242;
+  --danger-ink: 185 28 28;
+  --info: 2 132 199;
+  --info-soft: 240 249 255;
+  --info-ink: 3 105 161;
+
+  /* Chart tokens: categorical palette validated for colorblind separation on each surface
+     (slot 1 = brand royal blue; see docs/ARCHITECTURE.md). */
+  --chart-surface: #ffffff;
+  --chart-grid: #e8ecf2;
+  --chart-axis: #475569;
+  --series-1: #2563eb;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: 11 20 33;
+  --surface: 19 34 56;
+  --subtle: 26 44 70;
+  --muted: 44 64 94;
+  --line: 36 54 80;
+  --ink: 226 232 240;
+  --ink-2: 180 192 208;
+  --ink-3: 140 156 178;
+  --primary: 37 99 235;
+  --primary-fg: 255 255 255;
+  --primary-soft: 23 45 84;
+  --primary-ink: 147 197 253;
+  --navy: 8 17 29;
+  --navy-2: 20 36 58;
+  --accent: 56 189 248;
+  --success: 34 197 94;
+  --success-soft: 16 48 33;
+  --success-ink: 134 239 172;
+  --warning: 245 158 11;
+  --warning-soft: 56 40 9;
+  --warning-ink: 252 211 77;
+  --danger: 239 68 68;
+  --danger-soft: 64 21 25;
+  --danger-ink: 252 165 165;
+  --info: 56 189 248;
+  --info-soft: 12 42 64;
+  --info-ink: 125 211 252;
+
+  --chart-surface: #132238;
+  --chart-grid: #24364f;
+  --chart-axis: #b4c0d0;
+  --series-1: #3b82f6;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  @apply bg-bg text-ink antialiased;
+  font-feature-settings: 'cv11', 'ss01';
+}
+html[lang='ar'] body {
+  font-family: 'IBM Plex Sans Arabic', 'Inter', system-ui, sans-serif;
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+:focus-visible {
+  outline: 2px solid rgb(var(--primary));
+  outline-offset: 2px;
+}
+input[type='date']::-webkit-calendar-picker-indicator,
+input[type='time']::-webkit-calendar-picker-indicator,
+input[type='datetime-local']::-webkit-calendar-picker-indicator {
+  opacity: 0.6;
+}
+.dark input[type='date']::-webkit-calendar-picker-indicator,
+.dark input[type='datetime-local']::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+}
+/* Thin scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--muted)) transparent;
+}
+@media (forced-colors: active) {
+  .chart-texture {
+    forced-color-adjust: none;
+  }
+}
+
+@keyframes toast-progress {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-toast-in, .animate-toast-out, .animate-fade-in { animation: none !important; }
+}

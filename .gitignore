@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+server/storage/
+server/backups/
+*.log
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+server/storage-test/
+server/dist/
+client/dist/
+server/storage-docs/
