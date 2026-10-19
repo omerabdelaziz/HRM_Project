@@ -13,6 +13,11 @@ import { randomToken } from '../src/lib/crypto';
 
 const prisma = new PrismaClient();
 const DEMO = process.argv.includes('--demo') || process.env.SEED_DEMO === 'true';
+// Demo data signs in with published passwords; never allow it next to real data.
+if (DEMO && process.env.NODE_ENV === 'production') {
+  console.error('Refusing to seed demo data with NODE_ENV=production (demo accounts use well-known passwords).');
+  process.exit(1);
+}
 
 const CURRENCIES = [
   ['USD', 'US Dollar', '$', 2], ['EUR', 'Euro', '€', 2], ['GBP', 'Pound Sterling', '£', 2], ['AED', 'UAE Dirham', 'AED', 2],

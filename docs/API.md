@@ -1,6 +1,6 @@
 # API
 
-- **Interactive docs:** `http://<host>/api/docs` (Swagger UI)
+- **Interactive docs:** `http://<host>/api/docs` (Swagger UI; off in production unless `ENABLE_API_DOCS=true`)
 - **OpenAPI document:** `GET /api/openapi.json`, also committed as [`docs/openapi.json`](openapi.json). Regenerate it with `npm run openapi --workspace server`. It covers 186 operations.
 
 ## Authentication

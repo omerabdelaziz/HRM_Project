@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { createRouter, dateString, idParam, paged, pageQuery, paging } from '../../lib/http';
 import { prisma, Prisma } from '../../lib/prisma';
 import { hasPermission } from '../../auth/context';
-import { resolveCompanyId, assertCompanyAccess } from '../../auth/scope';
+import { accessibleCompanyIds, resolveCompanyId, assertCompanyAccess } from '../../auth/scope';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, ipOf } from '../../lib/audit';
 import { toDateOnly } from '../../lib/dates';
@@ -81,7 +81,7 @@ r.get('/requests/:id', { summary: 'Request detail with full approval history', p
   });
   if (!req) throw notFound('Approval request');
   const involved = req.requesterId === user.id || req.tasks.some((t) => t.assigneeId === user.id);
-  if (!involved && !hasPermission(user, 'approval.read.all')) throw notFound('Approval request');
+  if (!involved && (!hasPermission(user, 'approval.read.all') || !(await accessibleCompanyIds(user)).includes(req.companyId))) throw notFound('Approval request');
   const canAct = req.status === 'PENDING' && req.tasks.some((t) => t.assigneeId === user.id && t.status === 'OPEN' && t.stepOrder === req.currentStep);
   return { ...req, canAct };
 });

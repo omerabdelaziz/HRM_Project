@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 import type { Payslip, PayslipLine, PayrollRun, Company } from '@prisma/client';
 import { presentBank } from './service';
 import { mask } from '../../lib/crypto';
+import { csvCell } from '../../lib/csv';
 import { BRAND, drawLogo, drawLogoMark } from '../../lib/brand';
 
 type SlipWithLines = Payslip & { lines: PayslipLine[] };
@@ -99,10 +100,6 @@ export function payslipPdf(slip: SlipWithLines, run: PayrollRun, company: Compan
 
 /** Generic bank salary-transfer CSV (one row per paid employee). */
 export function bankFileCsv(run: PayrollRun, company: Company, slips: Payslip[]) {
-  const esc = (v: unknown) => {
-    const s = v === null || v === undefined ? '' : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
   const header = ['EmployeeNo', 'EmployeeName', 'BankName', 'IBAN', 'AccountNumber', 'Amount', 'Currency', 'Reference'];
   const ref = `SAL-${company.code}-${run.year}${String(run.month).padStart(2, '0')}`;
   const rows = slips
@@ -113,7 +110,7 @@ export function bankFileCsv(run: PayrollRun, company: Company, slips: Payslip[])
       return [snap.employeeNo, snap.name, bank.bankName, bank.iban, bank.bankAccount, Number(s.netPay).toFixed(2), s.currency, ref];
     });
   const missing = rows.filter((r) => !r[3] && !r[4]).map((r) => r[0]);
-  const csv = [header, ...rows].map((r) => r.map(esc).join(',')).join('\r\n');
+  const csv = [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
   return { csv, missing, count: rows.length };
 }
 

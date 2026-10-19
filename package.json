@@ -20,11 +20,15 @@
   "engines": {
     "node": ">=20"
   },
+  "overrides": {
+    "uuid": "11.1.1"
+  },
   "allowScripts": {
     "prisma@5.22.0": true,
     "@prisma/client@5.22.0": true,
     "@prisma/engines@5.22.0": true,
     "esbuild@0.24.0": true,
+    "esbuild@0.28.2": true,
     "esbuild@0.23.1": true,
     "esbuild@0.21.5": true,
     "@scarf/scarf": false

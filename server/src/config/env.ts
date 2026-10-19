@@ -14,6 +14,12 @@ const schema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   ACCESS_TOKEN_TTL_MIN: z.coerce.number().default(15),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().default(7),
+  /** A session with no API activity for this long must sign in again. */
+  SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).default(120),
+  /** Users holding administrative permissions must enrol MFA before using the app. Defaults to on in production. */
+  MFA_REQUIRED_FOR_ADMINS: z.enum(['true', 'false']).optional(),
+  /** Serve Swagger UI and openapi.json. Defaults to off in production. */
+  ENABLE_API_DOCS: z.enum(['true', 'false']).optional(),
   DATA_ENCRYPTION_KEY: z.string().min(1, 'DATA_ENCRYPTION_KEY is required (32 bytes, base64)'),
   DATA_HASH_KEY: z.string().min(1, 'DATA_HASH_KEY is required'),
   STORAGE_DIR: z.string().default('./storage'),
@@ -38,3 +44,9 @@ if (!parsed.success) {
 export const env = parsed.data;
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+
+/** Mutable so tests can switch policies on. */
+export const policy = {
+  mfaRequiredForAdmins: env.MFA_REQUIRED_FOR_ADMINS ? env.MFA_REQUIRED_FOR_ADMINS === 'true' : isProd,
+  apiDocs: env.ENABLE_API_DOCS ? env.ENABLE_API_DOCS === 'true' : !isProd,
+};

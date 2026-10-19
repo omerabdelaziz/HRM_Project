@@ -1,5 +1,6 @@
 import { prisma, Prisma } from '../lib/prisma';
 import { DataScope, PermissionCode, SCOPE_RANK } from './permissions';
+import { policy } from '../config/env';
 
 export interface AuthUser {
   id: string;
@@ -16,6 +17,8 @@ export interface AuthUser {
   /** Company restriction coming from role assignments; null = unrestricted. */
   companyIds: string[] | null;
   locale: string;
+  mustChangePassword: boolean;
+  mfaEnabled: boolean;
   /** Company selected in the UI (X-Company-Id header), used when a request names no company. */
   preferredCompanyId?: string;
   _employeeWhere?: Prisma.EmployeeWhereInput;
@@ -57,9 +60,18 @@ export async function loadAuthUser(userId: string, sessionId: string): Promise<A
     scope,
     companyIds: unrestricted ? null : [...companyIds],
     locale: user.locale,
+    mustChangePassword: user.mustChangePassword,
+    mfaEnabled: user.mfaEnabled,
   };
 }
 
 export function hasPermission(user: AuthUser, ...codes: PermissionCode[]) {
   return codes.some((c) => user.permissions.has(c));
+}
+
+/** Permissions that make an account administrative (and subject to the MFA requirement). */
+export const ADMIN_PERMISSIONS: PermissionCode[] = ['user.manage', 'role.manage', 'settings.manage', 'payroll.approve', 'payroll.pay'];
+
+export function mfaSetupRequired(user: AuthUser) {
+  return policy.mfaRequiredForAdmins && !user.mfaEnabled && hasPermission(user, ...ADMIN_PERMISSIONS);
 }

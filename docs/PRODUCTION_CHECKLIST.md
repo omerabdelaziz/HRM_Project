@@ -6,7 +6,8 @@
 - [ ] Serve only over HTTPS (required for the `Secure` refresh cookie); enable HSTS at the proxy
 - [ ] Set `CLIENT_ORIGIN` to the production URL only
 - [ ] Seed **without** `--demo`; change the first administrator's password and enable two-step verification
-- [ ] Require two-step verification for Super Administrator, HR Administrator, Payroll and Finance users
+- [ ] Keep `MFA_REQUIRED_FOR_ADMINS` on (the production default): admin, payroll-approval and finance accounts must enrol two-step verification
+- [ ] Leave `ENABLE_API_DOCS` off in production unless the API docs must be reachable
 - [ ] Review role permissions and data scopes; remove unused roles
 - [ ] Use a PostgreSQL account that owns only the HRMS database; restrict network access to the database
 - [ ] Run `npm audit` and review findings; pin and patch dependencies regularly

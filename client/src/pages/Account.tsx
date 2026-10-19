@@ -53,16 +53,16 @@ export default function Account() {
   );
 }
 
-function Mfa({ enabled, onChange }: { enabled: boolean; onChange: () => void }) {
+export function Mfa({ enabled, onChange, className }: { enabled: boolean; onChange: () => void; className?: string }) {
   const { t } = useTranslation();
   const [setup, setSetup] = useState<{ secret: string; qrDataUrl: string } | null>(null);
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const start = useApiMutation(() => api.post<{ secret: string; qrDataUrl: string }>('/auth/mfa/setup'), { success: '', onSuccess: (r) => setSetup(r) });
-  const enable = useApiMutation(() => api.post('/auth/mfa/enable', { code }), { success: t('account.mfaEnabled'), onSuccess: () => (setSetup(null), setCode(''), onChange()) });
+  const enable = useApiMutation(() => api.post('/auth/mfa/enable', { code, password }), { success: t('account.mfaEnabled'), onSuccess: () => (setSetup(null), setCode(''), setPassword(''), onChange()) });
   const disable = useApiMutation(() => api.post('/auth/mfa/disable', { password }), { success: t('account.mfaDisabled'), onSuccess: () => (setPassword(''), onChange()) });
   return (
-    <Card>
+    <Card className={className}>
       <CardHeader title={t('account.mfa')} subtitle={t('account.mfaHint')} actions={enabled ? <Badge tone="success"><ShieldCheck className="h-3 w-3" /> {t('common.on')}</Badge> : <Badge>{t('common.off')}</Badge>} />
       {enabled ? (
         <div className="space-y-3">
@@ -83,7 +83,10 @@ function Mfa({ enabled, onChange }: { enabled: boolean; onChange: () => void }) 
           <Field label={t('login.mfaCode')}>
             <Input inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} className="max-w-[10rem] tracking-[0.3em]" />
           </Field>
-          <Button variant="primary" disabled={code.length !== 6} loading={enable.isPending} onClick={() => enable.mutate(undefined)}>
+          <Field label={t('account.confirmWithPassword')}>
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+          </Field>
+          <Button variant="primary" disabled={code.length !== 6 || !password} loading={enable.isPending} onClick={() => enable.mutate(undefined)}>
             {t('account.verifyEnable')}
           </Button>
         </div>

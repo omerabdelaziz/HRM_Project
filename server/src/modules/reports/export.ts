@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { Column, ReportResult } from './definitions';
 import { BRAND, drawLogo } from '../../lib/brand';
+import { csvCell } from '../../lib/csv';
 
 function display(v: unknown, c: Column) {
   if (v === null || v === undefined) return '';
@@ -33,12 +34,11 @@ export async function toXlsx(report: ReportResult) {
 }
 
 export function toCsv(report: ReportResult) {
-  const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-  const lines = [report.columns.map((c) => esc(c.label)).join(',')];
+  const lines = [report.columns.map((c) => csvCell(c.label)).join(',')];
   for (const row of report.rows) {
     lines.push(report.columns.map((c) => {
       const v = row[c.key];
-      return esc(typeof v === 'number' && c.type !== 'percent' ? String(Math.round(v * 100) / 100) : display(v, c));
+      return csvCell(typeof v === 'number' && c.type !== 'percent' ? Math.round(v * 100) / 100 : display(v, c));
     }).join(','));
   }
   return Buffer.from(`﻿${lines.join('\r\n')}`, 'utf8');

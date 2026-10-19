@@ -9,6 +9,7 @@ import { Toaster } from './lib/toast';
 import Login from './pages/Login';
 import ChangePassword from './pages/ChangePassword';
 
+const MfaSetup = lazy(() => import('./pages/MfaSetup'));
 const Home = lazy(() => import('./pages/Home'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Account = lazy(() => import('./pages/Account'));
@@ -46,7 +47,7 @@ export function App() {
   return (
     <>
       <Routed />
-      <Toaster belowTopBar={!!me && !me.mustChangePassword} />
+      <Toaster belowTopBar={!!me && !me.mustChangePassword && !me.mfaSetupRequired} />
     </>
   );
 }
@@ -65,6 +66,7 @@ function Routed() {
     );
   }
   if (me.mustChangePassword) return <ChangePassword forced />;
+  if (me.mfaSetupRequired) return <Suspense fallback={<Spinner className="h-full" />}><MfaSetup /></Suspense>;
 
   const r = (path: string, el: ReactNode, perm?: string[]) => <Route path={path} element={<Guard perm={perm}>{el}</Guard>} />;
   return (

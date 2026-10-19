@@ -21,6 +21,9 @@ Use three separate databases and `.env` files that never share secrets:
 | `PORT` | | API port (default 4100) |
 | `CLIENT_ORIGIN` | | Allowed browser origin(s), comma-separated; also used in email links |
 | `ACCESS_TOKEN_TTL_MIN`, `REFRESH_TOKEN_TTL_DAYS` | | Session lifetimes (15 / 7) |
+| `SESSION_IDLE_MINUTES` | | Sign out sessions idle this long (120) |
+| `MFA_REQUIRED_FOR_ADMINS` | | Accounts with user, role, settings or payroll approve/pay permissions must enrol MFA before using the app. Default: on in production |
+| `ENABLE_API_DOCS` | | Serve Swagger UI at `/api/docs` and `/api/openapi.json`. Default: off in production |
 | `STORAGE_DIR` | | Uploaded documents and photos (default `./storage`) — put on persistent, backed-up storage |
 | `BACKUP_DIR`, `BACKUP_RETENTION_DAYS` | | Nightly `pg_dump` location and retention (14 days) |
 | `PG_BIN_DIR` | | Folder containing `pg_dump` if it isn't on `PATH` |

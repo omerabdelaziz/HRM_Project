@@ -292,7 +292,7 @@
         "tags": [
           "Authentication"
         ],
-        "summary": "Confirm MFA enrollment with a code from the authenticator app",
+        "summary": "Confirm MFA enrollment with a code from the authenticator app (requires password)",
         "description": "",
         "security": [
           {
@@ -308,10 +308,15 @@
                   "code": {
                     "type": "string",
                     "pattern": "^\\d{6}$"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [
-                  "code"
+                  "code",
+                  "password"
                 ]
               }
             }

@@ -5,9 +5,11 @@ import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, ipOf } from '../../lib/audit';
 import { randomToken } from '../../lib/crypto';
 import { hashPassword } from '../../auth/passwords';
-import { ALL_PERMISSIONS, PERMISSIONS } from '../../auth/permissions';
+import { notifySecurityChange } from '../../lib/mailer';
+import { ALL_PERMISSIONS, DataScope, PermissionCode, PERMISSIONS, SCOPE_RANK } from '../../auth/permissions';
 import { AuthUser } from '../../auth/context';
-import { accessibleCompanyIds } from '../../auth/scope';
+import { accessibleCompanyIds, assertEmployeeInScope, resolveCompanyId } from '../../auth/scope';
+import { assertCanGrantRoles, isUnrestricted, roleWithPermissions } from '../../auth/grants';
 
 // ── Users ──
 
@@ -16,19 +18,49 @@ const u = usersRouter;
 
 const tempPassword = () => `${randomToken(9)}7k`;
 
-function guardSuperAdmin(actor: AuthUser, roleCodes: string[]) {
-  if (roleCodes.includes('SUPER_ADMIN') && !actor.roles.includes('SUPER_ADMIN')) {
-    throw forbidden('Only a Super Administrator can grant the Super Administrator role');
-  }
+/** Loads the roles to grant and checks the actor may grant them. */
+async function grantableRoles(actor: AuthUser, roleCodes: string[], db: Prisma.TransactionClient = prisma) {
+  const roles = await db.role.findMany({ where: { code: { in: roleCodes } }, include: roleWithPermissions });
+  if (roles.length !== new Set(roleCodes).size) throw badRequest('One or more roles do not exist');
+  assertCanGrantRoles(actor, roles);
+  return roles;
 }
 
+/**
+ * The company role assignments apply to. Only an unrestricted user may grant roles across all companies;
+ * everyone else grants within a company they can access (by default the one they are working in).
+ */
+async function grantCompany(actor: AuthUser, requested: string | null | undefined) {
+  if (requested) return resolveCompanyId(actor, requested);
+  return isUnrestricted(actor) ? null : resolveCompanyId(actor);
+}
+
+/**
+ * A user account the actor may manage: it must belong only to companies the actor can access,
+ * and every role it holds must be one the actor could grant (otherwise resetting its password would hand over that access).
+ */
 async function guardTarget(actor: AuthUser, userId: string) {
-  const target = await prisma.user.findUnique({ where: { id: userId }, include: { roles: { include: { role: true } } } });
+  const target = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { employee: { select: { companyId: true } }, roles: { include: { role: { include: roleWithPermissions } } } },
+  });
   if (!target) throw notFound('User');
-  if (target.roles.some((r) => r.role.code === 'SUPER_ADMIN') && !actor.roles.includes('SUPER_ADMIN')) {
-    throw forbidden('Only a Super Administrator can modify a Super Administrator');
+  if (!isUnrestricted(actor)) {
+    const companies = await accessibleCompanyIds(actor);
+    const inside = (c: string | null | undefined) => !!c && companies.includes(c);
+    const belongs = inside(target.employee?.companyId) || target.roles.some((r) => inside(r.companyId));
+    const outside = (target.employee && !inside(target.employee.companyId)) || target.roles.some((r) => !inside(r.companyId));
+    if (!belongs || outside) throw notFound('User');
   }
+  assertCanGrantRoles(actor, target.roles.map((r) => r.role), 'manage a user with');
   return target;
+}
+
+/** An employee record linked to a login must be within the actor's scope and not the actor's own account. */
+async function guardEmployeeLink(actor: AuthUser, employeeId: string | null | undefined, targetUserId?: string) {
+  if (!employeeId) return;
+  if (targetUserId === actor.id && employeeId !== actor.employeeId) throw forbidden('You cannot link your own account to a different employee');
+  await assertEmployeeInScope(actor, employeeId);
 }
 
 u.get(
@@ -69,17 +101,16 @@ const userBody = z.object({
 });
 
 u.post('/', { summary: 'Create a user account (returns a one-time temporary password)', permission: 'user.manage', body: userBody, status: 201 }, async ({ req, user, body }) => {
-  guardSuperAdmin(user, body.roleCodes);
-  const roles = await prisma.role.findMany({ where: { code: { in: body.roleCodes } } });
-  if (roles.length !== body.roleCodes.length) throw badRequest('One or more roles do not exist');
-  if (body.companyId && !(await accessibleCompanyIds(user)).includes(body.companyId)) throw forbidden();
+  const roles = await grantableRoles(user, body.roleCodes);
+  const companyId = await grantCompany(user, body.companyId);
+  await guardEmployeeLink(user, body.employeeId);
   if (body.employeeId && (await prisma.user.findUnique({ where: { employeeId: body.employeeId } }))) throw conflict('This employee already has a user account');
   const password = tempPassword();
   const created = await prisma.user.create({
     data: {
       email: body.email, displayName: body.displayName, employeeId: body.employeeId ?? null, isActive: body.isActive,
       passwordHash: await hashPassword(password), mustChangePassword: true,
-      roles: { create: roles.map((r) => ({ roleId: r.id, companyId: body.companyId ?? null })) },
+      roles: { create: roles.map((r) => ({ roleId: r.id, companyId })) },
     },
     select: { id: true, email: true, displayName: true },
   });
@@ -90,16 +121,17 @@ u.post('/', { summary: 'Create a user account (returns a one-time temporary pass
 u.put('/:id', { summary: 'Update a user account and its roles', permission: 'user.manage', params: idParam, body: userBody.partial().omit({ email: true }) }, async ({ req, user, params, body }) => {
   const target = await guardTarget(user, params.id);
   if (params.id === user.id && body.isActive === false) throw badRequest('You cannot deactivate your own account');
-  if (body.roleCodes) guardSuperAdmin(user, body.roleCodes);
+  if (body.employeeId !== undefined && body.employeeId !== target.employeeId) await guardEmployeeLink(user, body.employeeId, params.id);
+  const roles = body.roleCodes ? await grantableRoles(user, body.roleCodes) : null;
+  // Keep the company of existing assignments unless a new one is given.
+  const companyId = body.companyId !== undefined || !target.roles.length ? await grantCompany(user, body.companyId) : target.roles[0].companyId;
   const updated = await prisma.$transaction(async (tx) => {
-    if (body.roleCodes) {
-      const roles = await tx.role.findMany({ where: { code: { in: body.roleCodes } } });
-      if (roles.length !== body.roleCodes.length) throw badRequest('One or more roles do not exist');
-      if (params.id === user.id && target.roles.some((r) => r.role.code === 'SUPER_ADMIN') && !body.roleCodes.includes('SUPER_ADMIN')) {
+    if (roles) {
+      if (params.id === user.id && target.roles.some((r) => r.role.code === 'SUPER_ADMIN') && !body.roleCodes!.includes('SUPER_ADMIN')) {
         throw badRequest('You cannot remove your own Super Administrator role');
       }
       await tx.userRole.deleteMany({ where: { userId: params.id } });
-      await tx.userRole.createMany({ data: roles.map((r) => ({ userId: params.id, roleId: r.id, companyId: body.companyId ?? null })) });
+      await tx.userRole.createMany({ data: roles.map((r) => ({ userId: params.id, roleId: r.id, companyId })) });
     }
     const res = await tx.user.update({
       where: { id: params.id },
@@ -114,13 +146,14 @@ u.put('/:id', { summary: 'Update a user account and its roles', permission: 'use
 });
 
 u.post('/:id/reset-password', { summary: 'Reset a password (returns a one-time temporary password)', permission: 'user.manage', params: idParam }, async ({ req, user, params }) => {
-  await guardTarget(user, params.id);
+  const target = await guardTarget(user, params.id);
   const password = tempPassword();
   await prisma.$transaction([
     prisma.user.update({ where: { id: params.id }, data: { passwordHash: await hashPassword(password), mustChangePassword: true, failedLoginCount: 0, lockedUntil: null } }),
     prisma.session.updateMany({ where: { userId: params.id, revokedAt: null }, data: { revokedAt: new Date() } }),
   ]);
   await audit({ userId: user.id, action: 'RESET_PASSWORD', entity: 'User', entityId: params.id, ip: ipOf(req) });
+  await notifySecurityChange(target.email, `Your password was reset by ${user.displayName}`, ipOf(req));
   return { temporaryPassword: password };
 });
 
@@ -131,9 +164,10 @@ u.post('/:id/unlock', { summary: 'Unlock an account locked by failed sign-ins', 
 });
 
 u.post('/:id/reset-mfa', { summary: 'Remove MFA from an account (lost device)', permission: 'user.manage', params: idParam }, async ({ req, user, params }) => {
-  await guardTarget(user, params.id);
+  const target = await guardTarget(user, params.id);
   await prisma.user.update({ where: { id: params.id }, data: { mfaEnabled: false, mfaSecretEnc: null } });
   await audit({ userId: user.id, action: 'RESET_MFA', entity: 'User', entityId: params.id, ip: ipOf(req) });
+  await notifySecurityChange(target.email, `Two-factor authentication was removed by ${user.displayName}`, ipOf(req));
 });
 
 // ── Roles ──
@@ -164,7 +198,17 @@ async function setPermissions(tx: Prisma.TransactionClient, roleId: string, code
   await tx.rolePermission.createMany({ data: perms.map((p) => ({ roleId, permissionId: p.id })) });
 }
 
+/** Only a Super Administrator may add permissions or widen a data scope beyond their own. */
+function assertRoleWithinActor(actor: AuthUser, body: { dataScope: string; permissions: string[] }, existing?: { dataScope: string; permissions: string[] }) {
+  if (actor.roles.includes('SUPER_ADMIN')) return;
+  const added = body.permissions.filter((p) => !existing?.permissions.includes(p) && !actor.permissions.has(p as PermissionCode));
+  if (added.length) throw forbidden(`You cannot add permissions you do not have: ${added.join(', ')}`);
+  const allowed = Math.max(SCOPE_RANK[actor.scope], existing ? SCOPE_RANK[existing.dataScope as DataScope] : -1);
+  if (SCOPE_RANK[body.dataScope as DataScope] > allowed) throw forbidden('You cannot give a role a wider data scope than your own');
+}
+
 ro.post('/', { summary: 'Create a custom role', permission: 'role.manage', body: roleBody, status: 201 }, async ({ req, user, body }) => {
+  assertRoleWithinActor(user, body);
   const role = await prisma.$transaction(async (tx) => {
     const created = await tx.role.create({ data: { code: body.code, name: body.name, description: body.description, dataScope: body.dataScope } });
     await setPermissions(tx, created.id, body.permissions);
@@ -178,6 +222,7 @@ ro.put('/:id', { summary: 'Update a role and its permissions', permission: 'role
   const before = await prisma.role.findUnique({ where: { id: params.id }, include: { permissions: { include: { permission: true } } } });
   if (!before) throw notFound('Role');
   if (before.code === 'SUPER_ADMIN') throw badRequest('The Super Administrator role always has every permission and cannot be edited');
+  assertRoleWithinActor(user, body, { dataScope: before.dataScope, permissions: before.permissions.map((p) => p.permission.code) });
   await prisma.$transaction(async (tx) => {
     await tx.role.update({ where: { id: params.id }, data: { name: body.name, description: body.description, dataScope: body.dataScope } });
     await setPermissions(tx, params.id, body.permissions);

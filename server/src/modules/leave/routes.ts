@@ -6,7 +6,7 @@ import { hasPermission } from '../../auth/context';
 import { AuthUser } from '../../auth/context';
 import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit, diff, ipOf } from '../../lib/audit';
-import { resolveStored, saveFile, upload } from '../../lib/storage';
+import { saveFile, sendStored, uploadFile } from '../../lib/storage';
 import { toDateOnly } from '../../lib/dates';
 import { available, ensureAllBalances } from './balances';
 import { adjustBalance, cancelLeave, createLeaveRequest, validateLeave } from './service';
@@ -183,13 +183,13 @@ r.post(
     description: 'Employees submit for themselves. Users with leave.manage may submit for employees in scope and may record pre-approved leave with autoApprove.',
     body: createSchema,
     status: 201,
-    middleware: [upload.single('attachment')],
+    middleware: uploadFile('attachment'),
   },
   async ({ req, user, body }) => {
     const employeeId = await targetEmployee(user, body.employeeId, 'leave.manage');
     if (employeeId === user.employeeId && !hasPermission(user, 'leave.request', 'leave.manage')) throw forbidden();
     if (body.autoApprove && !hasPermission(user, 'leave.manage')) throw forbidden('Only HR can record pre-approved leave');
-    const attachmentPath = req.file ? saveFile('leave', req.file.originalname, req.file.buffer) : null;
+    const attachmentPath = req.file ? saveFile('leave', req.file.buffer, req.file.mimetype) : null;
     return createLeaveRequest({ ...body, employeeId, attachmentPath }, user.id, { autoApprove: !!body.autoApprove && employeeId !== user.employeeId });
   },
 );
@@ -201,7 +201,7 @@ r.get('/requests/:id/attachment', { summary: 'Download the supporting document',
     if (!hasPermission(user, 'leave.read')) throw notFound('Attachment');
     await assertEmployeeInScope(user, req.employeeId);
   }
-  res.sendFile(resolveStored(req.attachmentPath));
+  sendStored(res, req.attachmentPath, { fileName: 'leave-attachment' });
 });
 
 r.post(

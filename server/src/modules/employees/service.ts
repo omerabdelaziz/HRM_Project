@@ -7,6 +7,7 @@ import { audit } from '../../lib/audit';
 import { addDays, toDateOnly } from '../../lib/dates';
 import { AuthUser, hasPermission } from '../../auth/context';
 import { reportingTree } from '../../auth/scope';
+import { assertCanGrantRoles, roleWithPermissions } from '../../auth/grants';
 import { ensureAllBalances } from '../leave/balances';
 import { hashPassword } from '../../auth/passwords';
 
@@ -221,10 +222,8 @@ export async function createEmployee(tx: Tx, companyId: string, input: CreateEmp
   let temporaryPassword: string | undefined;
   if (createUserAccount) {
     temporaryPassword = `${randomToken(9)}9a`;
-    const roles = await tx.role.findMany({ where: { code: { in: roleCodes.length ? roleCodes : ['EMPLOYEE'] } } });
-    if (actor && roles.some((r) => r.code === 'SUPER_ADMIN') && !actor.roles.includes('SUPER_ADMIN')) {
-      throw unprocessable('Only a Super Administrator can grant the Super Administrator role');
-    }
+    const roles = await tx.role.findMany({ where: { code: { in: roleCodes.length ? roleCodes : ['EMPLOYEE'] } }, include: roleWithPermissions });
+    if (actor) assertCanGrantRoles(actor, roles);
     const existing = await tx.user.findUnique({ where: { email: employee.email } });
     if (existing) throw conflict('A user account with this email already exists');
     await tx.user.create({

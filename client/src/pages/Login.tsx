@@ -10,6 +10,11 @@ import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/form';
 import { Alert } from '@/components/ui/display';
 
+/** Only same-app paths: "//host" and "/\host" would navigate to another site. */
+function safeReturnPath(from: string | undefined) {
+  return from && /^\/(?![/\\])/.test(from) ? from : '/';
+}
+
 export default function Login() {
   const { t, i18n } = useTranslation();
   const { login } = useAuth();
@@ -29,7 +34,7 @@ export default function Login() {
     try {
       const res = await login(email, password, mfa ? mfaCode : undefined);
       if (res.mfaRequired) setMfa(true);
-      else navigate(location.state?.from ?? '/', { replace: true });
+      else navigate(safeReturnPath(location.state?.from), { replace: true });
     } catch (err) {
       setError(errorMessage(err));
     } finally {

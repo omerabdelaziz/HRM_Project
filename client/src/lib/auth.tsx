@@ -13,6 +13,8 @@ export interface Me {
   theme: Theme;
   mfaEnabled: boolean;
   mustChangePassword: boolean;
+  /** Administrative account without MFA, where MFA is required: only MFA setup is available. */
+  mfaSetupRequired: boolean;
   roles: string[];
   permissions: string[];
   scope: string;

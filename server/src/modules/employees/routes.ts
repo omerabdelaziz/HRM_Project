@@ -5,7 +5,7 @@ import { assertEmployeeInScope, employeeScope, resolveCompanyId } from '../../au
 import { hasPermission } from '../../auth/context';
 import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit, ipOf } from '../../lib/audit';
-import { deleteStored, resolveStored, saveFile, upload } from '../../lib/storage';
+import { deleteStored, IMAGE_KINDS, saveFile, sendStored, uploadFile } from '../../lib/storage';
 import { toDateOnly } from '../../lib/dates';
 import {
   archiveEmployee, createEmployee, createEmployeeSchema, employeeInclude, findDuplicates, presentEmployee,
@@ -110,7 +110,7 @@ r.post(
     summary: 'Bulk import employees from Excel (multipart field "file")',
     description: 'All rows are validated first. Nothing is saved unless every row is valid. Use dryRun=true to validate only.',
     permission: 'employee.import',
-    middleware: [upload.single('file')],
+    middleware: uploadFile('file', ['xlsx']),
     body: z.object({ companyId: z.string().uuid().optional(), dryRun: z.preprocess((v) => v === 'true' || v === true, z.boolean()).default(true) }),
   },
   async ({ req, user, body }) => {
@@ -239,7 +239,7 @@ r.post(
     permission: 'document.manage',
     params: idParam,
     status: 201,
-    middleware: [upload.single('file')],
+    middleware: uploadFile('file'),
     body: z.object({
       type: z.enum(DOC_TYPES),
       title: z.string().trim().min(1).max(200),
@@ -253,7 +253,7 @@ r.post(
     await assertEmployeeInScope(user, params.id);
     if (!req.file) throw badRequest('Attach a file in the "file" field');
     if (body.issueDate && body.expiryDate && body.expiryDate < body.issueDate) throw badRequest('Expiry date must be after issue date');
-    const storagePath = saveFile(`employees/${params.id}`, req.file.originalname, req.file.buffer);
+    const storagePath = saveFile(`employees/${params.id}`, req.file.buffer, req.file.mimetype);
     const doc = await prisma.employeeDocument.create({
       data: {
         employeeId: params.id,
@@ -283,9 +283,7 @@ r.get('/:id/documents/:docId/download', { summary: 'Download a document', params
   if (!doc) throw notFound('Document');
   if (doc.confidential && !hasPermission(user, 'document.confidential.read')) throw notFound('Document');
   await audit({ userId: user.id, action: 'DOWNLOAD', entity: 'EmployeeDocument', entityId: doc.id, ip: ipOf(req) });
-  res.setHeader('Content-Type', doc.mimeType);
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.fileName)}"`);
-  res.sendFile(resolveStored(doc.storagePath));
+  sendStored(res, doc.storagePath, { mime: doc.mimeType, fileName: doc.fileName });
 });
 
 r.delete('/:id/documents/:docId', { summary: 'Delete a document', permission: 'document.manage', params: z.object({ id: z.string().uuid(), docId: z.string().uuid() }) }, async ({ req, user, params }) => {
@@ -298,11 +296,11 @@ r.delete('/:id/documents/:docId', { summary: 'Delete a document', permission: 'd
   await audit({ userId: user.id, action: 'DELETE', entity: 'EmployeeDocument', entityId: doc.id, before: doc, ip: ipOf(req) });
 });
 
-r.post('/:id/photo', { summary: 'Upload a profile photo', permission: 'employee.update', params: idParam, middleware: [upload.single('file')] }, async ({ req, user, params }) => {
+r.post('/:id/photo', { summary: 'Upload a profile photo', permission: 'employee.update', params: idParam, middleware: uploadFile('file', IMAGE_KINDS) }, async ({ req, user, params }) => {
   await assertEmployeeInScope(user, params.id);
-  if (!req.file || !req.file.mimetype.startsWith('image/')) throw badRequest('Attach an image in the "file" field');
+  if (!req.file) throw badRequest('Attach an image in the "file" field');
   const before = await prisma.employee.findUniqueOrThrow({ where: { id: params.id }, select: { photoPath: true } });
-  const photoPath = saveFile('photos', req.file.originalname, req.file.buffer);
+  const photoPath = saveFile('photos', req.file.buffer, req.file.mimetype);
   await prisma.employee.update({ where: { id: params.id }, data: { photoPath } });
   if (before.photoPath) deleteStored(before.photoPath);
   return { photoPath };
@@ -313,5 +311,5 @@ r.get('/:id/photo', { summary: 'Profile photo', params: idParam, raw: true }, as
   const e = await prisma.employee.findUnique({ where: { id: params.id }, select: { photoPath: true } });
   if (!e?.photoPath) throw notFound('Photo');
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.sendFile(resolveStored(e.photoPath));
+  sendStored(res, e.photoPath, { inlineImage: true });
 });

@@ -264,9 +264,11 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
             <MenuItem icon={<Settings className="h-4 w-4" />} onClick={() => (close(), navigate('/account'))}>
               {t('topbar.accountSettings')}
             </MenuItem>
-            <MenuItem icon={<FileText className="h-4 w-4" />} onClick={() => (close(), window.open('/api/docs', '_blank'))}>
-              {t('topbar.apiDocs')}
-            </MenuItem>
+            {import.meta.env.DEV && (
+              <MenuItem icon={<FileText className="h-4 w-4" />} onClick={() => (close(), window.open('/api/docs', '_blank', 'noopener'))}>
+                {t('topbar.apiDocs')}
+              </MenuItem>
+            )}
             <MenuItem danger icon={<LogOut className="h-4 w-4" />} onClick={() => (close(), void logout())}>
               {t('topbar.signOut')}
             </MenuItem>

@@ -49,4 +49,5 @@ export function diff(before: Record<string, unknown>, after: Record<string, unkn
   return { before: b, after: a, changed: Object.keys(a).length > 0 };
 }
 
-export const ipOf = (req: Request) => (req.headers['x-forwarded-for'] as string)?.split(',')[0] ?? req.ip ?? null;
+/** Client IP as resolved by Express from the trusted proxy hop ('trust proxy'); the raw X-Forwarded-For header can be forged. */
+export const ipOf = (req: Request) => req.ip ?? null;

@@ -178,6 +178,8 @@
   "account": {
     "changePassword": "Change password",
     "mustChange": "For your security, please set a new password before continuing.",
+    "mfaRequiredTitle": "Set up two-factor authentication",
+    "mfaRequired": "Your account has administrative access, so two-factor authentication is required. Set it up to continue.",
     "currentPassword": "Current password",
     "newPassword": "New password",
     "confirmPassword": "Confirm new password",
