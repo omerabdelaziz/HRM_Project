@@ -16,7 +16,9 @@ const base = (over: Record<string, unknown> = {}) => ({
   lastName: `Test${Math.random().toString(36).slice(2, 7)}`,
   email: `nadia.${Math.random().toString(36).slice(2, 9)}@test.local`,
   hireDate: '2025-02-01',
+  branchId: ctx.branch.id,
   departmentId: ctx.dept.id,
+  positionId: ctx.position.id,
   ...over,
 });
 
@@ -82,12 +84,12 @@ describe('employee management', () => {
   it('imports from Excel with a validating dry run, then commits all rows', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Employees');
-    ws.addRow(['First Name*', 'Last Name*', 'Work Email*', 'Hire Date*', 'Department Code', 'Employee No', 'Manager Employee No']);
+    ws.addRow(['First Name*', 'Last Name*', 'Work Email*', 'Hire Date*', 'Branch Code', 'Department Code', 'Position Code', 'Employee No', 'Manager Employee No']);
     const tag = Math.random().toString(36).slice(2, 7);
-    ws.addRow(['Imp', 'Lead', `lead.${tag}@test.local`, '2025-03-01', 'OPS', `IMP-${tag}-1`, '']);
-    ws.addRow(['Imp', 'Member', `member.${tag}@test.local`, '2025-03-02', 'OPS', '', `IMP-${tag}-1`]);
+    ws.addRow(['Imp', 'Lead', `lead.${tag}@test.local`, '2025-03-01', 'HQ', 'OPS', 'OPSX', `IMP-${tag}-1`, '']);
+    ws.addRow(['Imp', 'Member', `member.${tag}@test.local`, '2025-03-02', 'HQ', 'OPS', 'OPSX', '', `IMP-${tag}-1`]);
     const good = Buffer.from(await wb.xlsx.writeBuffer());
-    ws.addRow(['Bad', 'Row', 'not-an-email', '2025-13-40', 'NOPE', '', '']);
+    ws.addRow(['Bad', 'Row', 'not-an-email', '2025-13-40', 'HQ', 'NOPE', 'OPSX', '', '']);
     const bad = Buffer.from(await wb.xlsx.writeBuffer());
 
     const dry = await api().post('/api/employees/import').set(auth(adminToken)).field('dryRun', 'true').attach('file', bad, 'e.xlsx');

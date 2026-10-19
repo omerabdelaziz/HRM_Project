@@ -163,7 +163,7 @@ async function approveLeave(tx: Tx, leaveRequestId: string, actorId: string | nu
       if (!req.halfDay) await tx.attendanceRecord.update({ where: { id: existing.id }, data: { status: 'ON_LEAVE', notes: `Leave: ${req.leaveType.name}` } });
     } else {
       await tx.attendanceRecord.create({
-        data: { employeeId: req.employeeId, date: day.date, status: req.halfDay ? 'HALF_DAY' : 'ON_LEAVE', source: 'MANUAL', notes: `Leave: ${req.leaveType.name}`, shiftId: day.shift?.id },
+        data: { employeeId: req.employeeId, date: day.date, status: req.halfDay ? 'HALF_DAY' : 'ON_LEAVE', source: 'SYSTEM', notes: `Leave: ${req.leaveType.name}`, shiftId: day.shift?.id },
       });
     }
   }

@@ -19,7 +19,11 @@ export interface Employee {
   dateOfBirth: string | null;
   nationality: string | null;
   maritalStatus: string | null;
+  nationalIdType: 'EMIRATES_ID' | 'PASSPORT' | 'OTHER' | null;
   nationalId: string | null;
+  pensionScheme: 'NONE' | 'GPSSA_OLD' | 'GPSSA_NEW' | 'ADPF_OLD' | 'ADPF_NEW';
+  /** null = inherited from the job grade */
+  overtimeEligible: boolean | null;
   address: string | null;
   emergencyContact: { name: string; relation?: string; phone: string } | null;
   photoPath: string | null;
@@ -47,7 +51,7 @@ export interface Employee {
   branch?: Ref | null;
   department?: Ref | null;
   position?: { id: string; title: string; titleAr: string | null } | null;
-  grade?: { id: string; code: string; name: string } | null;
+  grade?: { id: string; code: string; name: string; overtimeEligible: boolean } | null;
   category?: Ref | null;
   employmentType?: Ref | null;
   costCenter?: { id: string; code: string; name: string } | null;
@@ -56,6 +60,8 @@ export interface Employee {
   user?: { id: string; email: string; isActive: boolean; lastLoginAt: string | null; roles: { role: { code: string; name: string } }[] } | null;
   _count?: { reports: number; documents: number };
   temporaryPassword?: string;
+  /** Non-blocking checks returned after saving (e.g. manager in another department). */
+  warnings?: { code: string; field: string; message: string }[];
 }
 
 export interface ApprovalRequest {

@@ -113,7 +113,11 @@
     "to": "To",
     "total": "Total",
     "viewAll": "View all",
-    "year": "Year"
+    "year": "Year",
+    "selectPlaceholder": "Select…",
+    "clear": "Clear",
+    "and": " and ",
+    "fixHighlighted": "Please fix the highlighted fields"
   },
   "status": {
     "PROBATION": "Probation",
@@ -431,7 +435,39 @@
       "salary": "Salary",
       "leave": "Leave",
       "attendance": "Attendance"
-    }
+    },
+    "phoneHint": "Saved in international format (+971…)",
+    "nationalIdType": "ID type",
+    "nationalIdTypeAuto": "Automatic (Emirates ID for UAE nationals)",
+    "idType": {
+      "EMIRATES_ID": "Emirates ID",
+      "PASSPORT": "Passport",
+      "OTHER": "Other"
+    },
+    "emiratesIdHint": "Format 784-YYYY-NNNNNNN-C; dashes are optional",
+    "pensionScheme": "Pension scheme",
+    "pensionSchemeHint": "GPSSA for UAE nationals (new scheme for registrations from 2 Oct 2023); ADPF for Abu Dhabi nationals",
+    "pensionSchemeAuto": "Automatic (by nationality and hire date)",
+    "pension": {
+      "NONE": "Not in a pension scheme",
+      "GPSSA_OLD": "GPSSA – registered before 2 Oct 2023",
+      "GPSSA_NEW": "GPSSA – registered on or after 2 Oct 2023",
+      "ADPF_OLD": "ADPF – existing member",
+      "ADPF_NEW": "ADPF – new member"
+    },
+    "overtimeEligible": "Eligible for overtime",
+    "overtimeInherit": "As job grade ({{value}})",
+    "duplicateExists": "An employee with the same {{fields}} already exists ({{no}}).",
+    "duplicateSuspect": "A possible duplicate exists with the same {{fields}} ({{no}}). Confirm to create anyway.",
+    "duplicateReason": {
+      "email": "work email",
+      "nationalId": "National ID",
+      "nameAndDateOfBirth": "name and date of birth"
+    },
+    "warning": {
+      "MANAGER_OTHER_DEPARTMENT": "Saved. Note: the selected manager is in a different department and does not manage this department."
+    },
+    "notEligibleForOvertime": "This employee is not eligible for overtime (managerial grade). Overtime cannot be requested."
   },
   "import": {
     "title": "Import employees",
@@ -566,7 +602,9 @@
     "collapseAll": "Collapse all",
     "expand": "Expand",
     "collapse": "Collapse",
-    "teamSize": "People in this team"
+    "teamSize": "People in this team",
+    "overtimeEligible": "Overtime",
+    "overtimeEligibleHint": "Eligible for overtime (turn off for managerial grades)"
   },
   "attendance": {
     "subtitle": "Check-ins, worked hours, late arrivals and overtime.",
@@ -592,7 +630,8 @@
       "DEVICE": "Device",
       "MANUAL": "Manual",
       "IMPORT": "Import",
-      "CORRECTION": "Correction"
+      "CORRECTION": "Correction",
+      "SYSTEM": "System"
     },
     "none": "No attendance records",
     "noneHint": "Records appear when employees check in or when a day is closed.",
@@ -881,7 +920,8 @@
       "REOPENED": "Reopened",
       "CANCELLED": "Cancelled",
       "WITHDRAWN": "Withdrawn from approval"
-    }
+    },
+    "informationLines": "For information (not included in totals)"
   },
   "payComponent": {
     "configNote": "Allowances, statutory deductions, insurance, pension and tax are all configured here. Nothing is hard-coded — set them to match your company policy and local law.",
@@ -935,7 +975,8 @@
       "TAXABLE": "Taxable earnings",
       "GROSS": "Gross earnings",
       "BASIC": "Basic salary"
-    }
+    },
+    "pensionable": "Pensionable (part of the pension contribution salary)"
   },
   "payrollSettings": {
     "rates": "Daily and hourly rates",
@@ -961,7 +1002,22 @@
     "prorate": "Prorate joiners and leavers",
     "lateGrace": "Monthly lateness grace (minutes)",
     "rounding": "Rounding decimals",
-    "paymentDay": "Payment day"
+    "paymentDay": "Payment day",
+    "otNight": "Night overtime ×",
+    "otNightHint": "Applies to working-day overtime inside the night window",
+    "nightStart": "Night window starts",
+    "nightEnd": "Night window ends",
+    "otEligibilityHint": "Employees in grades not eligible for overtime (e.g. managers and executives) are never paid overtime. Set eligibility under Organization → Grades or on the employee.",
+    "pension": "Pension (GPSSA / ADPF)",
+    "pensionHint": "Contributions are calculated on basic salary plus pensionable allowances. Overtime, bonuses and variable pay are excluded. Confirm rates with GPSSA/ADPF before changing them.",
+    "pensionEmployerRate": "Employer share %",
+    "pensionMinBase": "Minimum contribution salary (AED)",
+    "pensionSubsidyRate": "Government subsidy %",
+    "pensionSubsidyThreshold": "Subsidy applies below (AED)",
+    "pensionPrivateSector": "Private-sector employer (GPSSA subsidy applies)",
+    "pensionEmployeeRate": "Employee share %",
+    "pensionCap": "Monthly cap (AED)",
+    "noCap": "No cap"
   },
   "reports": {
     "subtitle": "Run, chart, export and schedule reports.",
@@ -1175,7 +1231,9 @@
     "countWeekends": "Count weekends and holidays",
     "attachment": "Requires a supporting document",
     "negative": "Allow negative balance",
-    "overlap": "Can overlap other leave"
+    "overlap": "Can overlap other leave",
+    "minEmployeeAge": "Minimum employee age",
+    "minEmployeeAgeHint": "Checked on the hire date. UAE law: 15 minimum; ages 15–17 only with restrictions."
   },
   "audit": {
     "subtitle": "Every sensitive change, sign-in and export, with who did it and when.",
@@ -1239,5 +1297,21 @@
     "savedTitle": "Saved successfully!",
     "savedText": "The record has been saved successfully.",
     "errorTitle": "Something went wrong"
+  },
+  "validation": {
+    "required": "This field is required",
+    "email": "Enter a valid email address",
+    "phone": "Enter a valid phone number, e.g. +971 50 123 4567",
+    "nationality": "Select a nationality from the list",
+    "emiratesIdFormat": "Emirates ID must be 15 digits in the format 784-YYYY-NNNNNNN-C",
+    "emiratesIdChecksum": "This Emirates ID number is not valid (check digit does not match)",
+    "dobFuture": "Date of birth cannot be in the future",
+    "minAge": "The employee must be at least {{n}} years old on the hire date",
+    "pensionNationals": "Pension schemes apply to UAE nationals only",
+    "contractEnd": "Contract end date must be after its start date",
+    "iban": "Enter a valid IBAN, e.g. AE07 0331 2345 6789 0123 456",
+    "inUse": "Already in use",
+    "number": "Enter a valid number",
+    "minAgeFloor": "UAE law does not allow employment under 15"
   }
 }

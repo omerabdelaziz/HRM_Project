@@ -1,3 +1,4 @@
+import { nationalityName } from '@shared/countries';
 import { useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -157,7 +158,7 @@ export default function EmployeeDetail() {
 }
 
 function Overview({ e, own }: { e: Employee; own: boolean }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [editingSelf, setEditingSelf] = useState(false);
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -199,7 +200,7 @@ function Overview({ e, own }: { e: Employee; own: boolean }) {
               [t('employees.nameAr'), e.firstNameAr ? <span dir="rtl">{`${e.firstNameAr} ${e.lastNameAr ?? ''}`}</span> : null],
               [t('employees.gender'), e.gender ? t(`employees.${e.gender.toLowerCase()}`) : null],
               [t('employees.dateOfBirth'), e.dateOfBirth ? fmtDate(e.dateOfBirth) : null],
-              [t('employees.nationality'), e.nationality],
+              [t('employees.nationality'), e.nationality ? nationalityName(e.nationality, i18n.language === 'ar' ? 'ar' : 'en') : null],
               [t('employees.maritalStatus'), e.maritalStatus ? t(`employees.marital.${e.maritalStatus}`) : null],
               [t('employees.nationalId'), e.nationalId ?? (e.canViewSensitive ? null : t('employees.restricted'))],
               [t('employees.personalEmail'), e.personalEmail],

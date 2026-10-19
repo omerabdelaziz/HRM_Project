@@ -34,6 +34,10 @@ model Company {
   employeeNoPrefix      String   @default("EMP")
   employeeNoPadding     Int      @default(5)
   probationMonths       Int      @default(3)
+  // Minimum age at hire (UAE law allows 15–17 only with restrictions; 15 is the floor)
+  minEmployeeAge        Int      @default(18)
+  // Last attendance day fully closed by the close-day job (absences and missed punches finalised)
+  attendanceLastClosedDate DateTime? @db.Date
   isActive              Boolean  @default(true)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
@@ -137,6 +141,8 @@ model JobGrade {
   level     Int      @default(1)
   minSalary Decimal? @db.Decimal(14, 2)
   maxSalary Decimal? @db.Decimal(14, 2)
+  // Managerial grades are not paid overtime; employees inherit this unless overridden
+  overtimeEligible Boolean @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -329,6 +335,7 @@ model Employee {
   dateOfBirth       DateTime?      @db.Date
   nationality       String?
   maritalStatus     String?
+  nationalIdType    String? // EMIRATES_ID | PASSPORT | OTHER (Emirates ID rules apply to UAE nationals when unset)
   nationalIdEnc     String?
   nationalIdHash    String?
   address           String?
@@ -356,6 +363,9 @@ model Employee {
   bankName          String?
   bankAccountEnc    String?
   ibanEnc           String?
+  pensionScheme     PensionScheme  @default(NONE)
+  // null = inherit from the job grade
+  overtimeEligible  Boolean?
 
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
@@ -531,12 +541,14 @@ model AttendanceRecord {
   date              DateTime         @db.Date
   checkIn           DateTime?
   checkOut          DateTime?
-  source            String           @default("WEB") // WEB | MOBILE | DEVICE | MANUAL | IMPORT | CORRECTION
+  source            String           @default("WEB") // WEB | MOBILE | DEVICE | MANUAL | IMPORT | CORRECTION | SYSTEM
   status            AttendanceStatus @default(PRESENT)
   workedMinutes     Int              @default(0)
   lateMinutes       Int              @default(0)
   earlyLeaveMinutes Int              @default(0)
   overtimeMinutes   Int              @default(0)
+  // Part of overtimeMinutes that falls inside the night window (PayrollSettings.nightOvertimeStart/End)
+  nightOvertimeMinutes Int           @default(0)
   approvedOvertimeMinutes Int        @default(0)
   shiftId           String?
   notes             String?
@@ -806,6 +818,10 @@ model PayrollSettings {
   overtimeMultiplier       Decimal @default(1.25) @db.Decimal(5, 2)
   weekendOvertimeMultiplier Decimal @default(1.5) @db.Decimal(5, 2)
   holidayOvertimeMultiplier Decimal @default(2) @db.Decimal(5, 2)
+  nightOvertimeMultiplier  Decimal @default(1.5) @db.Decimal(5, 2)
+  // Night overtime window, local time HH:mm; may cross midnight
+  nightOvertimeStart       String  @default("22:00")
+  nightOvertimeEnd         String  @default("04:00")
   deductUnpaidLeave        Boolean @default(true)
   deductAbsence            Boolean @default(true)
   deductLateMinutes        Boolean @default(false)
@@ -815,6 +831,8 @@ model PayrollSettings {
   paymentDay               Int     @default(28)
   bankFileFormat           String  @default("GENERIC_CSV")
   companyBankAccount       String?
+  // Statutory pension rates, caps, minimum base and subsidy; null = UAE defaults (see payroll/pension.ts)
+  pensionRules             Json?
 
   company Company @relation(fields: [companyId], references: [id])
 }
@@ -823,6 +841,17 @@ enum PayComponentType {
   EARNING
   DEDUCTION
   EMPLOYER_CONTRIBUTION
+  // Shown on the payslip for information only (e.g. the government pension subsidy); excluded from all totals.
+  INFORMATION
+}
+
+// UAE statutory pension scheme of an employee (GPSSA federal, ADPF Abu Dhabi). Rates and caps live in PayrollSettings.pensionRules.
+enum PensionScheme {
+  NONE
+  GPSSA_OLD // registered before 2 Oct 2023
+  GPSSA_NEW // registered on or after 2 Oct 2023
+  ADPF_OLD
+  ADPF_NEW
 }
 
 model PayComponent {
@@ -843,6 +872,8 @@ model PayComponent {
   maxAmount      Decimal?         @db.Decimal(14, 2)
   baseCap        Decimal?         @db.Decimal(14, 2) // cap applied to the base before a percentage
   isTaxable      Boolean          @default(true)
+  // Fixed monthly earnings that form part of the pension "contribution salary" (basic is always included)
+  pensionable    Boolean          @default(false)
   // Whether earnings count towards the daily-rate base when rateBase = GROSS
   includeInRateBase Boolean       @default(false)
   isRecurring    Boolean          @default(true)

@@ -9,7 +9,7 @@ import { fmtDate, fmtMinutes, fmtNumber, fmtTime } from '@/lib/format';
 import { addDaysIso, isoToLocalInput, localInputToIso, monthStartIso, todayIso } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Field, FormGrid, Input, SearchInput, Select, Textarea } from '@/components/ui/form';
-import { Card, PageHeader, StatTile, StatusBadge } from '@/components/ui/display';
+import { Alert, Card, PageHeader, StatTile, StatusBadge } from '@/components/ui/display';
 import { Dialog } from '@/components/ui/dialog';
 import { Tabs } from '@/components/ui/nav';
 import { Column, DataTable, Pagination } from '@/components/ui/table';
@@ -327,6 +327,9 @@ export function CorrectionDialog({ open, onClose }: { open: boolean; onClose: ()
 
 function OvertimeDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useTranslation();
+  const { me } = useAuth();
+  // Managerial grades are not paid overtime; the API also refuses the request.
+  const eligible = me?.employee ? (me.employee.overtimeEligible ?? me.employee.grade?.overtimeEligible ?? true) : true;
   const [date, setDate] = useState(todayIso());
   const [hours, setHours] = useState('2');
   const [reason, setReason] = useState('');
@@ -339,13 +342,14 @@ function OvertimeDialog({ open, onClose }: { open: boolean; onClose: () => void 
       footer={
         <>
           <Button onClick={onClose}>{t('common.cancel')}</Button>
-          <Button variant="primary" disabled={!Number(hours) || reason.trim().length < 3} loading={save.isPending} onClick={() => save.mutate(undefined)}>
+          <Button variant="primary" disabled={!eligible || !Number(hours) || reason.trim().length < 3} loading={save.isPending} onClick={() => save.mutate(undefined)}>
             {t('common.submit')}
           </Button>
         </>
       }
     >
       <div className="space-y-4">
+        {!eligible && <Alert tone="warning">{t('employees.notEligibleForOvertime')}</Alert>}
         <FormGrid>
           <Field label={t('common.date')} required>
             <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />

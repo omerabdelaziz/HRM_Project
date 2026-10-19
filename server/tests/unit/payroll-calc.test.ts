@@ -14,7 +14,7 @@ function component(p: Partial<PayComponent> & Pick<PayComponent, 'code' | 'type'
 
 const housing = component({ code: 'HOUSING', type: 'EARNING', calcType: 'FIXED' });
 const settings: PayrollInput['settings'] = {
-  dailyRateBasis: 'FIXED_30', rateBase: 'BASIC', standardHoursPerDay: D(8), overtimeMultiplier: D(1.25), weekendOvertimeMultiplier: D(1.5), holidayOvertimeMultiplier: D(2),
+  dailyRateBasis: 'FIXED_30', rateBase: 'BASIC', standardHoursPerDay: D(8), overtimeMultiplier: D(1.25), weekendOvertimeMultiplier: D(1.5), holidayOvertimeMultiplier: D(2), nightOvertimeMultiplier: D(1.5),
   deductUnpaidLeave: true, deductAbsence: true, deductLateMinutes: false, lateDeductionGraceMinutesPerMonth: 0, prorateNewJoiners: true, roundingDecimals: 2,
 };
 

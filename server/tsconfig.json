@@ -11,8 +11,8 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": false,
     "outDir": "dist",
-    "rootDir": ".",
+    "rootDir": "..",
     "types": ["node"]
   },
-  "include": ["src", "prisma", "tests"]
+  "include": ["src", "prisma", "tests", "../shared"]
 }

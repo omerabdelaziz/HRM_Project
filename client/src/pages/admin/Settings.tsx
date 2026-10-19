@@ -102,6 +102,7 @@ interface CompanyData {
   employeeNoPrefix: string;
   employeeNoPadding: number;
   probationMonths: number;
+  minEmployeeAge: number;
 }
 
 function CompanySettings() {
@@ -167,6 +168,7 @@ function CompanySettings() {
               <Input type="number" min={3} max={10} value={c.employeeNoPadding} onChange={(e) => set('employeeNoPadding', Number(e.target.value))} />
             </Field>
             <Field label={t('settings.probationMonths')}><Input type="number" min={0} max={24} value={c.probationMonths} onChange={(e) => set('probationMonths', Number(e.target.value))} /></Field>
+            <Field label={t('settings.minEmployeeAge')} hint={t('settings.minEmployeeAgeHint')}><Input type="number" min={15} max={30} value={c.minEmployeeAge} onChange={(e) => set('minEmployeeAge', Number(e.target.value))} /></Field>
           </FormGrid>
         </FormSection>
         <div className="flex justify-end">

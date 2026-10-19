@@ -7,13 +7,14 @@ import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { errorMessage, useGet } from '@/lib/hooks';
 import { useQueryClient } from '@tanstack/react-query';
-import { personName } from '@/lib/i18n';
+import { personName, translateMessage } from '@/lib/i18n';
+import { ageOn, capitalizeName, emiratesIdProblem, LEGAL_MIN_AGE, normalizePhone, requiresEmiratesId, todayIso } from '@shared/validation';
 import type { Employee } from '@/lib/types';
 import { Dialog } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Field, FormGrid, FormSection, Input, Select } from '@/components/ui/form';
 import { Alert } from '@/components/ui/display';
-import { EmployeePicker, OrgSelect } from '@/components/ui/pickers';
+import { CountryPicker, EmployeePicker, OrgSelect } from '@/components/ui/pickers';
 
 type FormValues = {
   firstName: string;
@@ -27,7 +28,11 @@ type FormValues = {
   dateOfBirth: string;
   nationality: string;
   maritalStatus: string;
+  nationalIdType: string;
   nationalId: string;
+  pensionScheme: string;
+  /** '' = inherit from grade */
+  overtimeEligible: '' | 'true' | 'false';
   address: string;
   ecName: string;
   ecRelation: string;
@@ -60,7 +65,8 @@ function toForm(e?: Employee): FormValues {
   return {
     firstName: e?.firstName ?? '', lastName: e?.lastName ?? '', firstNameAr: e?.firstNameAr ?? '', lastNameAr: e?.lastNameAr ?? '',
     email: e?.email ?? '', personalEmail: e?.personalEmail ?? '', phone: e?.phone ?? '', gender: e?.gender ?? '', dateOfBirth: d(e?.dateOfBirth),
-    nationality: e?.nationality ?? '', maritalStatus: e?.maritalStatus ?? '', nationalId: e?.canViewSensitive ? e?.nationalId ?? '' : '', address: e?.address ?? '',
+    nationality: e?.nationality ?? '', maritalStatus: e?.maritalStatus ?? '', nationalIdType: e?.nationalIdType ?? '', nationalId: e?.canViewSensitive ? e?.nationalId ?? '' : '', address: e?.address ?? '',
+    pensionScheme: e?.pensionScheme ?? '', overtimeEligible: e?.overtimeEligible === true ? 'true' : e?.overtimeEligible === false ? 'false' : '',
     ecName: e?.emergencyContact?.name ?? '', ecRelation: e?.emergencyContact?.relation ?? '', ecPhone: e?.emergencyContact?.phone ?? '',
     branchId: e?.branchId ?? null, departmentId: e?.departmentId ?? null, positionId: e?.positionId ?? null, gradeId: e?.gradeId ?? null,
     categoryId: e?.categoryId ?? null, employmentTypeId: e?.employmentTypeId ?? null, costCenterId: e?.costCenterId ?? null, managerId: e?.managerId ?? null,
@@ -82,7 +88,27 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
   const [created, setCreated] = useState<Employee | null>(null);
   const { data: shifts = [] } = useGet<{ id: string; name: string }[]>(open ? '/shifts' : null);
   const departmentId = watch('departmentId');
+  const nationality = watch('nationality');
+  const nationalIdType = watch('nationalIdType');
+  const hireDate = watch('hireDate');
   const sensitive = !editing || employee?.canViewSensitive;
+  const fixFields = () => toast.error(t('common.fixHighlighted'));
+
+  // Same rules as the API (shared/validation.ts), so every problem shows before submitting.
+  const rules = {
+    phone: (v: string) => !v || !!normalizePhone(v) || t('validation.phone'),
+    dateOfBirth: (v: string) => {
+      if (!v) return true;
+      if (v > todayIso()) return t('validation.dobFuture');
+      return ageOn(v, hireDate || todayIso()) >= LEGAL_MIN_AGE || t('validation.minAge', { n: LEGAL_MIN_AGE });
+    },
+    nationalId: (v: string) => {
+      if (!v || !requiresEmiratesId(nationalIdType || null, nationality || null)) return true;
+      const problem = emiratesIdProblem(v);
+      return !problem || t(problem);
+    },
+    pensionScheme: (v: string) => !v || v === 'NONE' || !nationality || nationality === 'AE' || t('validation.pensionNationals'),
+  };
 
   useEffect(() => {
     if (open) {
@@ -96,16 +122,18 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
   const submit = async (v: FormValues, confirmDuplicate = false) => {
     setServerErrors({});
     const body: Record<string, unknown> = {
-      firstName: v.firstName, lastName: v.lastName, firstNameAr: v.firstNameAr || null, lastNameAr: v.lastNameAr || null, email: v.email,
+      firstName: capitalizeName(v.firstName), lastName: capitalizeName(v.lastName), firstNameAr: v.firstNameAr || null, lastNameAr: v.lastNameAr || null, email: v.email,
       personalEmail: v.personalEmail || null, phone: v.phone || null, gender: v.gender || null, dateOfBirth: v.dateOfBirth || null,
       nationality: v.nationality || null, maritalStatus: v.maritalStatus || null, address: v.address || null,
+      ...(v.pensionScheme ? { pensionScheme: v.pensionScheme } : {}),
+      overtimeEligible: v.overtimeEligible === '' ? null : v.overtimeEligible === 'true',
       emergencyContact: v.ecName && v.ecPhone ? { name: v.ecName, relation: v.ecRelation || undefined, phone: v.ecPhone } : null,
       branchId: v.branchId, departmentId: v.departmentId, positionId: v.positionId, gradeId: v.gradeId, categoryId: v.categoryId,
       employmentTypeId: v.employmentTypeId, costCenterId: v.costCenterId, managerId: v.managerId, shiftId: v.shiftId,
       hireDate: v.hireDate, probationEndDate: v.probationEndDate || null, contractStartDate: v.contractStartDate || null, contractEndDate: v.contractEndDate || null,
       bankName: v.bankName || null,
     };
-    if (sensitive) Object.assign(body, { nationalId: v.nationalId || null, bankAccount: v.bankAccount || null, iban: v.iban ? v.iban.replace(/\s/g, '').toUpperCase() : null });
+    if (sensitive) Object.assign(body, { nationalIdType: v.nationalIdType || null, nationalId: v.nationalId || null, bankAccount: v.bankAccount || null, iban: v.iban ? v.iban.replace(/\s/g, '').toUpperCase() : null });
     try {
       let saved: Employee;
       if (editing) {
@@ -123,16 +151,30 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
         if (saved.temporaryPassword) setCreated(saved);
         else onClose();
       }
+      for (const w of saved.warnings ?? []) toast.warning(t(`employees.warning.${w.code}`, { defaultValue: w.message }));
       qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/employees') });
       onSaved?.(saved);
     } catch (e) {
       if (e instanceof ApiError) {
-        const details = e.details as { confirmable?: boolean } | undefined;
+        const details = e.details as { confirmable?: boolean; duplicates?: { employeeNo: string; reasons: string[] }[] } | undefined;
         if (e.status === 409) {
-          setDuplicate({ message: e.message, confirmable: !!details?.confirmable });
+          // Friendly, localised labels ("National ID") instead of field names.
+          const dup = details?.duplicates?.[0];
+          const message = dup
+            ? t(details?.confirmable ? 'employees.duplicateSuspect' : 'employees.duplicateExists', {
+                fields: dup.reasons.map((r) => t(`employees.duplicateReason.${r}`, { defaultValue: r })).join(t('common.and')),
+                no: dup.employeeNo,
+              })
+            : e.message;
+          setDuplicate({ message, confirmable: !!details?.confirmable });
           return;
         }
-        setServerErrors(e.fieldErrors);
+        const fieldErrors = Object.fromEntries(Object.entries(e.fieldErrors).map(([k, m]) => [k.split('.')[0], translateMessage(m) ?? m]));
+        setServerErrors(fieldErrors);
+        if (Object.keys(fieldErrors).length) {
+          fixFields();
+          return;
+        }
       }
       toast.error(errorMessage(e));
     }
@@ -166,7 +208,7 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
       footer={
         <>
           <Button onClick={onClose}>{t('common.cancel')}</Button>
-          <Button variant="primary" loading={formState.isSubmitting} onClick={handleSubmit((v) => submit(v))}>
+          <Button variant="primary" loading={formState.isSubmitting} onClick={handleSubmit((v) => submit(v), fixFields)}>
             {editing ? t('common.save') : t('employees.create')}
           </Button>
         </>
@@ -177,7 +219,7 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
           <Alert tone="warning" title={t('employees.possibleDuplicate')}>
             <p>{duplicate.message}</p>
             {duplicate.confirmable && (
-              <Button size="sm" className="mt-2" onClick={handleSubmit((v) => submit(v, true))}>
+              <Button size="sm" className="mt-2" onClick={handleSubmit((v) => submit(v, true), fixFields)}>
                 {t('employees.createAnyway')}
               </Button>
             )}
@@ -200,8 +242,8 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
             <Field label={t('employees.workEmail')} required error={err('email')}>
               <Input type="email" {...register('email', req)} aria-invalid={!!err('email')} />
             </Field>
-            <Field label={t('employees.phone')} error={err('phone')}>
-              <Input type="tel" {...register('phone')} />
+            <Field label={t('employees.phone')} error={err('phone')} hint={t('employees.phoneHint')}>
+              <Input type="tel" dir="ltr" {...register('phone', { validate: rules.phone })} aria-invalid={!!err('phone')} />
             </Field>
             <Field label={t('employees.gender')}>
               <Select {...register('gender')} placeholder={t('common.notSpecified')}>
@@ -210,10 +252,10 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
               </Select>
             </Field>
             <Field label={t('employees.dateOfBirth')} error={err('dateOfBirth')}>
-              <Input type="date" {...register('dateOfBirth')} />
+              <Input type="date" max={todayIso()} {...register('dateOfBirth', { validate: rules.dateOfBirth })} aria-invalid={!!err('dateOfBirth')} />
             </Field>
-            <Field label={t('employees.nationality')} hint={t('employees.nationalityHint')}>
-              <Input maxLength={60} {...register('nationality')} />
+            <Field label={t('employees.nationality')} error={err('nationality')}>
+              <Controller control={control} name="nationality" render={({ field }) => <CountryPicker value={field.value || null} onChange={(c) => field.onChange(c ?? '')} invalid={!!err('nationality')} />} />
             </Field>
             <Field label={t('employees.maritalStatus')}>
               <Select {...register('maritalStatus')} placeholder={t('common.notSpecified')}>
@@ -225,9 +267,24 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
               </Select>
             </Field>
             {sensitive && (
-              <Field label={t('employees.nationalId')} error={err('nationalId')}>
-                <Input {...register('nationalId')} autoComplete="off" />
-              </Field>
+              <>
+                <Field label={t('employees.nationalIdType')}>
+                  <Select {...register('nationalIdType')} placeholder={t('employees.nationalIdTypeAuto')}>
+                    {['EMIRATES_ID', 'PASSPORT', 'OTHER'].map((x) => (
+                      <option key={x} value={x}>
+                        {t(`employees.idType.${x}`)}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field
+                  label={t('employees.nationalId')}
+                  error={err('nationalId')}
+                  hint={requiresEmiratesId(nationalIdType || null, nationality || null) ? t('employees.emiratesIdHint') : undefined}
+                >
+                  <Input dir="ltr" {...register('nationalId', { validate: rules.nationalId })} autoComplete="off" aria-invalid={!!err('nationalId')} />
+                </Field>
+              </>
             )}
             <Field label={t('employees.personalEmail')} error={err('personalEmail')}>
               <Input type="email" {...register('personalEmail')} />
@@ -240,14 +297,14 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
 
         <FormSection title={t('employees.employment')}>
           <FormGrid>
-            <Field label={t('common.branch')} error={err('branchId')}>
-              <Controller control={control} name="branchId" render={({ field }) => <OrgSelect entity="branches" value={field.value} onChange={field.onChange} />} />
+            <Field label={t('common.branch')} required={!editing} error={err('branchId')}>
+              <Controller control={control} name="branchId" rules={editing ? undefined : req} render={({ field }) => <OrgSelect entity="branches" value={field.value} onChange={field.onChange} invalid={!!err('branchId')} />} />
             </Field>
-            <Field label={t('common.department')} error={err('departmentId')}>
-              <Controller control={control} name="departmentId" render={({ field }) => <OrgSelect entity="departments" value={field.value} onChange={field.onChange} />} />
+            <Field label={t('common.department')} required={!editing} error={err('departmentId')}>
+              <Controller control={control} name="departmentId" rules={editing ? undefined : req} render={({ field }) => <OrgSelect entity="departments" value={field.value} onChange={field.onChange} invalid={!!err('departmentId')} />} />
             </Field>
-            <Field label={t('common.position')} error={err('positionId')}>
-              <Controller control={control} name="positionId" render={({ field }) => <OrgSelect entity="positions" value={field.value} onChange={field.onChange} filter={departmentId ? { departmentId } : undefined} />} />
+            <Field label={t('common.position')} required={!editing} error={err('positionId')}>
+              <Controller control={control} name="positionId" rules={editing ? undefined : req} render={({ field }) => <OrgSelect entity="positions" value={field.value} onChange={field.onChange} filter={departmentId ? { departmentId } : undefined} invalid={!!err('positionId')} />} />
             </Field>
             <Field label={t('employees.grade')}>
               <Controller control={control} name="gradeId" render={({ field }) => <OrgSelect entity="grades" value={field.value} onChange={field.onChange} />} />
@@ -284,6 +341,24 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
                   </Select>
                 )}
               />
+            </Field>
+            <Field label={t('employees.pensionScheme')} error={err('pensionScheme')} hint={t('employees.pensionSchemeHint')}>
+              <Select {...register('pensionScheme', { validate: rules.pensionScheme })} placeholder={editing ? undefined : t('employees.pensionSchemeAuto')} aria-invalid={!!err('pensionScheme')}>
+                {['NONE', 'GPSSA_OLD', 'GPSSA_NEW', 'ADPF_OLD', 'ADPF_NEW'].map((x) => (
+                  <option key={x} value={x}>
+                    {t(`employees.pension.${x}`)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label={t('employees.overtimeEligible')}>
+              <Select {...register('overtimeEligible')}>
+                <option value="">
+                  {t('employees.overtimeInherit', { value: employee?.grade ? t(employee.grade.overtimeEligible ? 'common.yes' : 'common.no') : t('common.yes') })}
+                </option>
+                <option value="true">{t('common.yes')}</option>
+                <option value="false">{t('common.no')}</option>
+              </Select>
             </Field>
             <Field label={t('employees.hireDate')} required error={err('hireDate')}>
               <Input type="date" {...register('hireDate', req)} />

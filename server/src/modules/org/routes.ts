@@ -41,6 +41,9 @@ const companySchema = z.object({
   fiscalYearStartMonth: z.number().int().min(1).max(12).default(1),
   employeeNoPrefix: z.string().trim().max(10).regex(/^[A-Za-z0-9-]*$/),
   employeeNoPadding: z.number().int().min(3).max(10),
+  probationMonths: z.number().int().min(0).max(24).optional(),
+  /** UAE law: 15 is the floor; 15–17 only with restrictions. */
+  minEmployeeAge: z.number().int().min(15, 'validation.minAgeFloor').max(30).optional(),
   isActive: z.boolean().default(true),
 });
 
@@ -196,7 +199,7 @@ crud({
   path: 'grades',
   entity: 'JobGrade',
   delegate: () => prisma.jobGrade as unknown as Delegate,
-  schema: z.object({ code, name, level: z.number().int().min(0).default(1), minSalary: money, maxSalary: money }),
+  schema: z.object({ code, name, level: z.number().int().min(0).default(1), minSalary: money, maxSalary: money, overtimeEligible: z.boolean().default(true) }),
   orderBy: { level: 'asc' },
 });
 

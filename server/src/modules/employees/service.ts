@@ -1,13 +1,16 @@
 import type { Employee } from '@prisma/client';
 import { z } from 'zod';
 import { prisma, Prisma, Tx } from '../../lib/prisma';
-import { conflict, badRequest, notFound, unprocessable } from '../../lib/errors';
+import { conflict, badRequest, notFound, unprocessable, validationError } from '../../lib/errors';
 import { decrypt, encrypt, keyedHash, mask, randomToken } from '../../lib/crypto';
 import { audit } from '../../lib/audit';
 import { addDays, toDateOnly } from '../../lib/dates';
 import { AuthUser, hasPermission } from '../../auth/context';
 import { reportingTree } from '../../auth/scope';
 import { assertCanGrantRoles, roleWithPermissions } from '../../auth/grants';
+import { PENSION_SCHEMES } from '../payroll/pension';
+import { ageOn, capitalizeName, emiratesIdProblem, formatEmiratesId, LEGAL_MIN_AGE, NATIONAL_ID_TYPES, normalizePhone, requiresEmiratesId, todayIso } from '../../../../shared/validation';
+import { isCountryCode } from '../../../../shared/countries';
 import { ensureAllBalances } from '../leave/balances';
 import { hashPassword } from '../../auth/passwords';
 
@@ -15,21 +18,43 @@ const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 const optStr = (max = 200) => z.string().trim().max(max).nullish().transform((v) => (v === '' ? null : v));
 const optId = z.string().uuid().nullish().or(z.literal('').transform(() => null));
 
+/** Latin names are title-cased on save (keeps "Al Mansoori", "bin", mixed-case names). */
+const nameStr = z.string().trim().min(1, 'validation.required').max(100).transform(capitalizeName);
+/** Phones are stored in E.164 (default region AE). */
+const phoneStr = z
+  .string()
+  .trim()
+  .max(30)
+  .nullish()
+  .transform((v, ctx) => {
+    if (!v) return null;
+    const e164 = normalizePhone(v);
+    if (!e164) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'validation.phone' });
+    return e164 ?? v;
+  });
+
 export const employeeFields = z.object({
-  firstName: z.string().trim().min(1).max(100),
-  lastName: z.string().trim().min(1).max(100),
+  firstName: nameStr,
+  lastName: nameStr,
   firstNameAr: optStr(100),
   lastNameAr: optStr(100),
-  email: z.string().trim().toLowerCase().email(),
-  personalEmail: z.string().trim().toLowerCase().email().nullish().or(z.literal('').transform(() => null)),
-  phone: optStr(30),
+  email: z.string().trim().toLowerCase().email('validation.email'),
+  personalEmail: z.string().trim().toLowerCase().email('validation.email').nullish().or(z.literal('').transform(() => null)),
+  phone: phoneStr,
   gender: z.enum(['MALE', 'FEMALE']).nullish(),
   dateOfBirth: dateStr.nullish(),
-  nationality: optStr(60),
+  nationality: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .nullish()
+    .transform((v) => (v ? v : null))
+    .refine((v) => !v || isCountryCode(v), 'validation.nationality'),
   maritalStatus: z.enum(['SINGLE', 'MARRIED', 'DIVORCED', 'WIDOWED']).nullish(),
+  nationalIdType: z.enum(NATIONAL_ID_TYPES).nullish(),
   nationalId: optStr(50),
   address: optStr(500),
-  emergencyContact: z.object({ name: z.string().max(100), relation: z.string().max(50).optional(), phone: z.string().max(30) }).nullish(),
+  emergencyContact: z.object({ name: z.string().max(100), relation: z.string().max(50).optional(), phone: phoneStr }).nullish(),
   branchId: optId,
   departmentId: optId,
   positionId: optId,
@@ -45,24 +70,79 @@ export const employeeFields = z.object({
   contractEndDate: dateStr.nullish(),
   bankName: optStr(100),
   bankAccount: optStr(50),
-  iban: optStr(50).refine((v) => !v || /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(v.replace(/\s/g, '').toUpperCase()), 'Invalid IBAN format'),
+  iban: optStr(50).refine((v) => !v || /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(v.replace(/\s/g, '').toUpperCase()), 'validation.iban'),
+  pensionScheme: z.enum(PENSION_SCHEMES).optional(),
+  /** null = inherit from the job grade */
+  overtimeEligible: z.boolean().nullish(),
 });
 
-export const createEmployeeSchema = employeeFields.extend({
-  companyId: z.string().uuid().optional(),
-  status: z.enum(['PROBATION', 'ACTIVE']).optional(),
-  createUserAccount: z.boolean().default(false),
-  roleCodes: z.array(z.string()).default(['EMPLOYEE']),
-  /** Set after the user confirms a suspected duplicate (same name and date of birth). */
-  confirmDuplicate: z.boolean().default(false),
-});
+type EmployeeFieldValues = Partial<z.output<typeof employeeFields>>;
 
-export const updateEmployeeSchema = employeeFields.partial().extend({
-  status: z.enum(['PROBATION', 'ACTIVE', 'SUSPENDED']).optional(),
-  /** Date the organizational change takes effect, for the history record. */
-  effectiveDate: dateStr.optional(),
-  changeReason: z.string().trim().max(500).optional(),
-});
+/**
+ * Cross-field rules shared by create, update (merged with the stored record) and import.
+ * Every problem is reported, so the form can highlight all fields at once.
+ */
+export function employeeIssues(v: EmployeeFieldValues, opts: { minAge?: number } = {}): { path: string; message: string }[] {
+  const out: { path: string; message: string }[] = [];
+  if (v.dateOfBirth) {
+    if (v.dateOfBirth > todayIso()) out.push({ path: 'dateOfBirth', message: 'validation.dobFuture' });
+    else {
+      const age = ageOn(v.dateOfBirth, v.hireDate ?? todayIso());
+      const min = Math.max(LEGAL_MIN_AGE, opts.minAge ?? LEGAL_MIN_AGE);
+      if (age < min) out.push({ path: 'dateOfBirth', message: `validation.minAge|${min}` });
+    }
+  }
+  if (v.nationalId && requiresEmiratesId(v.nationalIdType, v.nationality)) {
+    const problem = emiratesIdProblem(v.nationalId);
+    if (problem) out.push({ path: 'nationalId', message: problem });
+  }
+  if (v.pensionScheme && v.pensionScheme !== 'NONE' && v.nationality && v.nationality !== 'AE') {
+    out.push({ path: 'pensionScheme', message: 'validation.pensionNationals' });
+  }
+  if (v.contractStartDate && v.contractEndDate && v.contractEndDate < v.contractStartDate) {
+    out.push({ path: 'contractEndDate', message: 'validation.contractEnd' });
+  }
+  return out;
+}
+
+const addIssues = (issues: { path: string; message: string }[], ctx: z.RefinementCtx) =>
+  issues.forEach((i) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i.path], message: i.message }));
+
+/** Stored form of the national ID: Emirates IDs as 784-YYYY-NNNNNNN-C. */
+function normalizeNationalId<T extends EmployeeFieldValues>(v: T): T {
+  if (v.nationalId && requiresEmiratesId(v.nationalIdType, v.nationality) && !emiratesIdProblem(v.nationalId)) {
+    return { ...v, nationalId: formatEmiratesId(v.nationalId) };
+  }
+  return v;
+}
+
+export const createEmployeeSchema = employeeFields
+  .extend({
+    companyId: z.string().uuid().optional(),
+    status: z.enum(['PROBATION', 'ACTIVE']).optional(),
+    createUserAccount: z.boolean().default(false),
+    roleCodes: z.array(z.string()).default(['EMPLOYEE']),
+    /** Set after the user confirms a suspected duplicate (same name and date of birth). */
+    confirmDuplicate: z.boolean().default(false),
+  })
+  .superRefine((v, ctx) => {
+    // Branch, department and position are mandatory for new employees.
+    for (const key of ['branchId', 'departmentId', 'positionId'] as const) {
+      if (!v[key]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: 'validation.required' });
+    }
+    addIssues(employeeIssues(v), ctx);
+  })
+  .transform(normalizeNationalId);
+
+export const updateEmployeeSchema = employeeFields
+  .partial()
+  .extend({
+    status: z.enum(['PROBATION', 'ACTIVE', 'SUSPENDED']).optional(),
+    /** Date the organizational change takes effect, for the history record. */
+    effectiveDate: dateStr.optional(),
+    changeReason: z.string().trim().max(500).optional(),
+  })
+  .superRefine((v, ctx) => addIssues(employeeIssues(v), ctx));
 
 export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
 type UpdateEmployeeInput = z.infer<typeof updateEmployeeSchema>;
@@ -72,7 +152,7 @@ export const employeeInclude = {
   branch: { select: { id: true, name: true, nameAr: true } },
   department: { select: { id: true, name: true, nameAr: true } },
   position: { select: { id: true, title: true, titleAr: true } },
-  grade: { select: { id: true, code: true, name: true } },
+  grade: { select: { id: true, code: true, name: true, overtimeEligible: true } },
   category: { select: { id: true, name: true, nameAr: true } },
   employmentType: { select: { id: true, name: true, nameAr: true } },
   costCenter: { select: { id: true, code: true, name: true } },
@@ -172,10 +252,41 @@ export async function findDuplicates(tx: Tx | typeof prisma, companyId: string, 
   }));
 }
 
+/** Human-readable labels for duplicate-check reasons (the client localises them from `reasons`). */
+const DUPLICATE_LABELS: Record<string, string> = { email: 'work email', nationalId: 'National ID', nameAndDateOfBirth: 'name and date of birth' };
+export const duplicateLabel = (reasons: string[]) => reasons.map((r) => DUPLICATE_LABELS[r] ?? r).join(' and ');
+
+/** Company-specific rules that the request schema cannot know (minimum age). */
+async function assertCompanyRules(tx: Tx, companyId: string, merged: EmployeeFieldValues) {
+  const company = await tx.company.findUniqueOrThrow({ where: { id: companyId }, select: { minEmployeeAge: true } });
+  const issues = employeeIssues(merged, { minAge: company.minEmployeeAge });
+  if (issues.length) throw validationError(issues);
+}
+
+/**
+ * Non-blocking check returned to the client: a manager outside the employee's department who
+ * does not manage that department or any of its parent departments.
+ */
+export async function managerWarnings(tx: Tx | typeof prisma, departmentId: string | null | undefined, managerId: string | null | undefined) {
+  if (!departmentId || !managerId) return [];
+  const manager = await tx.employee.findUnique({ where: { id: managerId }, select: { departmentId: true, firstName: true, lastName: true } });
+  if (!manager || manager.departmentId === departmentId) return [];
+  // Walk up the department tree: managing the department or an ancestor (or sitting in an ancestor) is a normal reporting line.
+  let current: string | null = departmentId;
+  for (let guard = 0; current && guard < 50; guard++) {
+    const dept: { managerId: string | null; parentId: string | null } | null = await tx.department.findUnique({ where: { id: current }, select: { managerId: true, parentId: true } });
+    if (!dept) break;
+    if (dept.managerId === managerId || (dept.parentId && dept.parentId === manager.departmentId)) return [];
+    current = dept.parentId;
+  }
+  return [{ code: 'MANAGER_OTHER_DEPARTMENT', field: 'managerId', message: `${manager.firstName} ${manager.lastName} is in a different department and does not manage this department or a parent department.` }];
+}
+
 export async function createEmployee(tx: Tx, companyId: string, input: CreateEmployeeInput, actor: AuthUser | null, opts: { employeeNo?: string } = {}) {
+  await assertCompanyRules(tx, companyId, input);
   const dups = await findDuplicates(tx, companyId, input);
   const hard = dups.filter((d) => d.reasons.includes('email') || d.reasons.includes('nationalId'));
-  if (hard.length) throw conflict(`An employee with the same ${hard[0].reasons.join(' and ')} already exists (${hard[0].employeeNo})`, { duplicates: hard });
+  if (hard.length) throw conflict(`An employee with the same ${duplicateLabel(hard[0].reasons)} already exists (${hard[0].employeeNo})`, { duplicates: hard });
   if (dups.length && !input.confirmDuplicate) {
     throw conflict('A possible duplicate exists with the same name and date of birth. Confirm to create anyway.', { duplicates: dups, confirmable: true });
   }
@@ -192,6 +303,9 @@ export async function createEmployee(tx: Tx, companyId: string, input: CreateEmp
   const status = input.status ?? (probationEnd && probationEnd >= toDateOnly(new Date()) ? 'PROBATION' : 'ACTIVE');
 
   const employeeNo = opts.employeeNo ?? (await nextEmployeeNo(tx, companyId));
+  // Non-UAE nationals are outside the pension system unless HR explicitly sets a scheme;
+  // UAE nationals registered from 2 Oct 2023 join the new GPSSA scheme.
+  const pensionScheme = input.pensionScheme ?? (input.nationality === 'AE' ? (hireDate >= new Date(Date.UTC(2023, 9, 2)) ? 'GPSSA_NEW' : 'GPSSA_OLD') : 'NONE');
   const { companyId: _c, createUserAccount, roleCodes, confirmDuplicate: _d, nationalId, bankAccount, iban, emergencyContact, ...fields } = input;
   const employee = await tx.employee.create({
     data: {
@@ -202,6 +316,7 @@ export async function createEmployee(tx: Tx, companyId: string, input: CreateEmp
       companyId,
       employeeNo,
       status,
+      pensionScheme,
       emergencyContact: emergencyContact ?? undefined,
       nationalIdEnc: encrypt(nationalId),
       nationalIdHash: keyedHash(nationalId),
@@ -240,7 +355,8 @@ export async function createEmployee(tx: Tx, companyId: string, input: CreateEmp
 
   await ensureAllBalances(tx, employee.id);
   await audit({ userId: actor?.id, action: 'CREATE', entity: 'Employee', entityId: employee.id, after: employee }, tx);
-  return { employee, temporaryPassword };
+  const warnings = await managerWarnings(tx, employee.departmentId, employee.managerId);
+  return { employee, temporaryPassword, warnings };
 }
 
 const TRACKED: Record<string, string> = {
@@ -259,9 +375,25 @@ export async function updateEmployee(id: string, input: UpdateEmployeeInput, act
     if (!before || before.deletedAt) throw notFound('Employee');
     if (['RESIGNED', 'TERMINATED', 'RETIRED'].includes(before.status)) throw unprocessable('Separated employees cannot be edited; rehire them as a new record');
     await validateRefs(tx, before.companyId, { ...input, contractStartDate: input.contractStartDate ?? before.contractStartDate?.toISOString().slice(0, 10) }, id);
+    // Cross-field rules against the record as it will be after the update.
+    const iso = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : null);
+    const merged: EmployeeFieldValues = {
+      dateOfBirth: iso(before.dateOfBirth),
+      hireDate: iso(before.hireDate) ?? undefined,
+      nationality: before.nationality,
+      nationalIdType: before.nationalIdType as EmployeeFieldValues['nationalIdType'],
+      contractStartDate: iso(before.contractStartDate),
+      contractEndDate: iso(before.contractEndDate),
+      pensionScheme: before.pensionScheme,
+      // Re-check the stored ID when nationality or ID type changes.
+      ...(input.nationalId === undefined && (input.nationality !== undefined || input.nationalIdType !== undefined) ? { nationalId: decrypt(before.nationalIdEnc) } : {}),
+      ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)),
+    };
+    await assertCompanyRules(tx, before.companyId, merged);
+    if (input.nationalId && requiresEmiratesId(merged.nationalIdType, merged.nationality)) input.nationalId = formatEmiratesId(input.nationalId);
     if (input.email || input.nationalId || input.firstName || input.lastName) {
       const dups = await findDuplicates(tx, before.companyId, { email: input.email, nationalId: input.nationalId }, id);
-      if (dups.length) throw conflict(`Another employee already uses this ${dups[0].reasons.join(' and ')} (${dups[0].employeeNo})`, { duplicates: dups });
+      if (dups.length) throw conflict(`Another employee already uses this ${duplicateLabel(dups[0].reasons)} (${dups[0].employeeNo})`, { duplicates: dups });
     }
 
     const { effectiveDate, changeReason, nationalId, bankAccount, iban, emergencyContact, ...fields } = input;
@@ -298,7 +430,8 @@ export async function updateEmployee(id: string, input: UpdateEmployeeInput, act
       await tx.user.updateMany({ where: { employeeId: id }, data: { displayName: `${after.firstName} ${after.lastName}` } });
     }
     await audit({ userId: actor.id, action: 'UPDATE', entity: 'Employee', entityId: id, before, after }, tx);
-    return after;
+    const warnings = input.managerId !== undefined || input.departmentId !== undefined ? await managerWarnings(tx, after.departmentId, after.managerId) : [];
+    return Object.assign(after, { warnings });
   });
 }
 

@@ -26,13 +26,14 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === 'P2002') {
       const fields = ((err.meta?.target as string[] | undefined) ?? []).filter((f) => !/^(companyId|employeeId|runId|userId)$/.test(f));
-      const label = (f: string) => f.replace(/Id$/, '').replace(/([A-Z])/g, ' $1').toLowerCase().replace(/^./, (c) => c.toUpperCase());
+      const KNOWN: Record<string, string> = { nationalIdHash: 'National ID', email: 'Email', employeeNo: 'Employee number', code: 'Code', iban: 'IBAN' };
+      const label = (f: string) => KNOWN[f] ?? f.replace(/(Id|Hash|Enc)$/, '').replace(/([A-Z])/g, ' $1').toLowerCase().replace(/^./, (c) => c.toUpperCase());
       const what = fields.length ? fields.map(label).join(' and ') : 'This value';
       return res.status(409).json({
         error: {
           code: 'DUPLICATE',
           message: `${what} is already in use. Please choose a different value.`,
-          details: fields.map((f) => ({ path: f, message: 'Already in use' })),
+          details: fields.map((f) => ({ path: f === 'nationalIdHash' ? 'nationalId' : f, message: 'validation.inUse' })),
         },
       });
     }

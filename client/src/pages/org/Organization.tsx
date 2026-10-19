@@ -230,8 +230,16 @@ export default function Organization() {
             { key: 'name', header: t('common.name'), cell: (r) => <span className="font-medium">{r.name}</span> },
             { key: 'level', header: t('org.level'), align: 'end', cell: (r) => r.level },
             { key: 'range', header: t('org.salaryRange'), align: 'end', cell: (r) => (r.minSalary || r.maxSalary ? `${fmtMoney(r.minSalary)} – ${fmtMoney(r.maxSalary)}` : '—') },
+            { key: 'ot', header: t('org.overtimeEligible'), hideBelow: 'md', cell: (r) => (r.overtimeEligible === false ? t('common.no') : t('common.yes')) },
           ]}
-          fields={[{ key: 'code', label: t('org.code'), required: true }, { key: 'name', label: t('common.name'), required: true }, { key: 'level', label: t('org.level'), type: 'number' }, { key: 'minSalary', label: t('org.minSalary'), type: 'number' }, { key: 'maxSalary', label: t('org.maxSalary'), type: 'number' }]}
+          fields={[
+            { key: 'code', label: t('org.code'), required: true },
+            { key: 'name', label: t('common.name'), required: true },
+            { key: 'level', label: t('org.level'), type: 'number' },
+            { key: 'minSalary', label: t('org.minSalary'), type: 'number' },
+            { key: 'maxSalary', label: t('org.maxSalary'), type: 'number' },
+            { key: 'overtimeEligible', label: t('org.overtimeEligibleHint'), type: 'boolean' },
+          ]}
         />
       )}
       {tab === 'cost-centers' && <EntityTab key={tab} entity="cost-centers" columns={[code, { key: 'name', header: t('common.name'), cell: (r) => r.name }]} fields={[{ key: 'code', label: t('org.code'), required: true }, { key: 'name', label: t('common.name'), required: true }]} />}

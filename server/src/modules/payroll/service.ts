@@ -8,6 +8,8 @@ import { employeeCalendar } from '../attendance/calendar';
 import { registerWorkflowHandler, submitForApproval, cancelRequest } from '../workflow/engine';
 import { notify, userIdsWithRole } from '../notifications/service';
 import { calculatePayslip, isEligible, PayrollInput, StructureSegment } from './calc';
+import { resolvePensionRules } from './pension';
+import { isOvertimeEligible } from '../attendance/service';
 import { assertPayrollOpen } from './locks';
 
 const D = (v: Prisma.Decimal.Value | null | undefined) => new Prisma.Decimal(v ?? 0);
@@ -38,6 +40,7 @@ interface EmployeePayrollContext {
 
 const empInclude = {
   department: { select: { id: true, name: true, code: true } },
+  grade: { select: { overtimeEligible: true } },
   branch: { select: { id: true, name: true } },
   position: { select: { title: true } },
   category: { select: { code: true } },
@@ -109,16 +112,24 @@ async function buildContext(tx: Tx, run: PayrollRun, employeeId: string, compone
   const otRequiresApproval = policy?.overtimeRequiresApproval ?? true;
   let absentDays = 0;
   let lateMinutes = 0;
-  const overtime = { normalMinutes: 0, weekendMinutes: 0, holidayMinutes: 0 };
+  const overtime = { normalMinutes: 0, weekendMinutes: 0, holidayMinutes: 0, nightMinutes: 0 };
+  // Managerial grades (and employees overridden as ineligible) are never paid overtime.
+  const overtimeEligible = isOvertimeEligible(employee);
   for (const rec of records) {
     if (rec.status === 'ABSENT') absentDays += 1;
     lateMinutes += rec.lateMinutes;
-    const ot = otRequiresApproval ? rec.approvedOvertimeMinutes : rec.overtimeMinutes;
+    const ot = overtimeEligible ? (otRequiresApproval ? rec.approvedOvertimeMinutes : rec.overtimeMinutes) : 0;
     if (ot > 0) {
       const day = calendar.find((d) => d.date.getTime() === rec.date.getTime());
       if (day?.holiday) overtime.holidayMinutes += ot;
       else if (day?.isWeekend) overtime.weekendMinutes += ot;
-      else overtime.normalMinutes += ot;
+      else {
+        // Weekend and holiday rates take precedence; on working days the night part is paid at the night rate.
+        // Approved minutes are allocated to the night window first.
+        const night = Math.min(rec.nightOvertimeMinutes, ot);
+        overtime.nightMinutes += night;
+        overtime.normalMinutes += ot - night;
+      }
     }
   }
 
@@ -131,7 +142,7 @@ async function buildContext(tx: Tx, run: PayrollRun, employeeId: string, compone
     employee,
     currency,
     periodDays,
-    metrics: { unpaidLeaveDays, absentDays, lateMinutes, overtimeMinutes: overtime.normalMinutes + overtime.weekendMinutes + overtime.holidayMinutes },
+    metrics: { unpaidLeaveDays, absentDays, lateMinutes, overtimeMinutes: overtime.normalMinutes + overtime.weekendMinutes + overtime.holidayMinutes + overtime.nightMinutes },
     input: {
       settings,
       periodDays,
@@ -143,6 +154,7 @@ async function buildContext(tx: Tx, run: PayrollRun, employeeId: string, compone
       lateMinutes,
       overtime,
       adjustments: adjustments.map((a) => ({ type: a.type, code: a.code, description: a.description, amount: a.amount })),
+      pension: { scheme: employee.pensionScheme, rules: resolvePensionRules(settings.pensionRules) },
     },
   };
 }

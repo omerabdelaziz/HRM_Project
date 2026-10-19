@@ -45,11 +45,12 @@ export async function makeCompany(overrides: { weekendDays?: number[] } = {}) {
   const branch = await prisma.branch.create({ data: { companyId: company.id, code: 'HQ', name: 'HQ' } });
   const dept = await prisma.department.create({ data: { companyId: company.id, code: 'OPS', name: 'Operations', branchId: branch.id } });
   const dept2 = await prisma.department.create({ data: { companyId: company.id, code: 'FIN', name: 'Finance', branchId: branch.id } });
+  const position = await prisma.position.create({ data: { companyId: company.id, code: 'OPSX', title: 'Operations Executive', departmentId: dept.id } });
   const shift = await prisma.shift.create({ data: { companyId: company.id, code: 'DAY', name: 'Day', startTime: '09:00', endTime: '18:00', breakMinutes: 60, graceMinutes: 10, workDays: [1, 2, 3, 4, 5], isDefault: true } });
   const annual = await prisma.leaveType.create({ data: { companyId: company.id, code: 'ANNUAL', name: 'Annual leave', annualEntitlement: 24, accrualMethod: 'ANNUAL', prorateFirstYear: false } });
   const unpaid = await prisma.leaveType.create({ data: { companyId: company.id, code: 'UNPAID', name: 'Unpaid leave', isPaid: false, accrualMethod: 'NONE', annualEntitlement: 0 } });
   const housing = await prisma.payComponent.create({ data: { companyId: company.id, code: 'HOUSING', name: 'Housing', type: 'EARNING', calcType: 'FIXED' } });
-  return { company, branch, dept, dept2, shift, annual, unpaid, housing };
+  return { company, branch, dept, dept2, position, shift, annual, unpaid, housing };
 }
 
 export async function makeAdmin(companyId: string) {

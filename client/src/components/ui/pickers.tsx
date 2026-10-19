@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { useDebounced, useAuthedImage, useGet } from '@/lib/hooks';
 import { localized, personName } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { COUNTRY_CODES, countryName, nationalityName } from '@shared/countries';
 import { Avatar } from './display';
 import { Select } from './form';
 
@@ -132,6 +133,83 @@ export function PersonCell({ employee, sub }: { employee: { id: string; firstNam
         <p className="truncate font-medium text-ink">{personName(employee)}</p>
         <p className="truncate text-xs text-ink-3">{sub ?? employee.employeeNo}</p>
       </div>
+    </div>
+  );
+}
+
+/** Searchable ISO 3166 country picker. Shows nationality names ("Jordanian") with the country beneath, in the UI language. */
+export function CountryPicker({ value, onChange, invalid, id, placeholder }: { value: string | null | undefined; onChange: (code: string | null) => void; invalid?: boolean; id?: string; placeholder?: string }) {
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language === 'ar' ? 'ar' : 'en';
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+  const items = COUNTRY_CODES.map((code) => ({ code, nationality: nationalityName(code, lang), country: countryName(code, lang) })).sort((a, b) => a.nationality.localeCompare(b.nationality, lang));
+  const needle = q.trim().toLowerCase();
+  // Search in both languages so either spelling finds the country.
+  const list = needle
+    ? items.filter((x) => [x.code, x.nationality, x.country, nationalityName(x.code, lang === 'ar' ? 'en' : 'ar'), countryName(x.code, lang === 'ar' ? 'en' : 'ar')].some((s) => s.toLowerCase().includes(needle)))
+    : items;
+  return (
+    <div ref={ref} className="relative">
+      <button
+        id={id}
+        type="button"
+        aria-invalid={invalid}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 text-start text-sm hover:border-ink-3/40 focus:border-primary focus:outline-none focus:ring-[3px] focus:ring-primary/15 aria-[invalid=true]:border-danger"
+      >
+        <span className={cn('truncate', !value && 'text-ink-3')}>{value ? nationalityName(value, lang) : placeholder ?? t('common.selectPlaceholder')}</span>
+        <span className="flex items-center gap-1 text-ink-3">
+          {value && (
+            <X
+              className="h-4 w-4 hover:text-ink"
+              aria-label={t('common.clear')}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange(null);
+              }}
+            />
+          )}
+          <ChevronDown className="h-4 w-4" />
+        </span>
+      </button>
+      {open && (
+        <div className="absolute z-40 mt-1 w-full min-w-[16rem] rounded-xl border border-line bg-surface p-1 shadow-pop">
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('common.searchPlaceholder')} aria-label={t('common.search')} className="mb-1 h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20" />
+          <div role="listbox" className="max-h-64 overflow-y-auto">
+            {!list.length && <p className="px-3 py-2 text-sm text-ink-3">{t('common.noResults')}</p>}
+            {list.map((x) => (
+              <button
+                key={x.code}
+                type="button"
+                role="option"
+                aria-selected={value === x.code}
+                onClick={() => {
+                  onChange(x.code);
+                  setQ('');
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-start text-sm hover:bg-subtle"
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {x.nationality}
+                  {x.nationality !== x.country && <span className="text-xs text-ink-3"> · {x.country}</span>}
+                </span>
+                <span className="text-xs text-ink-3">{x.code}</span>
+                {value === x.code && <Check className="h-4 w-4 text-primary" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

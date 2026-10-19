@@ -51,4 +51,15 @@ export function personName(p: { firstName: string; lastName: string; firstNameAr
   return `${p.firstName} ${p.lastName}`;
 }
 
+/**
+ * Translates an API message. Validation messages are i18n keys, optionally with one parameter after "|"
+ * (e.g. "validation.minAge|18"); anything else (older plain-English messages) is shown as-is.
+ */
+export function translateMessage(message: string | undefined | null): string | undefined {
+  if (!message) return undefined;
+  const [key, param] = message.split('|');
+  if (/^[a-z]+\.[A-Za-z.]+$/.test(key) && i18n.exists(key)) return i18n.t(key, { n: param });
+  return message;
+}
+
 export default i18n;

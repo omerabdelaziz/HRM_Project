@@ -265,6 +265,7 @@ export function PayslipBody({ slip }: { slip: Slip }) {
     ['EARNING', t('payroll.earnings')],
     ['DEDUCTION', t('payroll.deductions')],
     ['EMPLOYER_CONTRIBUTION', t('payroll.employerContributions')],
+    ['INFORMATION', t('payroll.informationLines')],
   ];
   return (
     <div className="space-y-5">
@@ -298,7 +299,11 @@ export function PayslipBody({ slip }: { slip: Slip }) {
                 <li key={l.id} className="flex justify-between gap-3 py-1.5">
                   <span className="text-ink-2">
                     {l.name}
-                    {l.quantity && <span className="text-xs text-ink-3"> · {fmtNumber(Number(l.quantity), 2)} {l.source === 'OVERTIME' || l.source === 'LATE' ? t('payroll.hoursShort') : t('payroll.daysShort')}</span>}
+                    {l.quantity && l.source === 'STATUTORY' && l.rate ? (
+                      <span className="text-xs text-ink-3"> · {fmtNumber(Number(l.rate), 2)}% × {fmtMoney(l.quantity, slip.currency)}</span>
+                    ) : (
+                      l.quantity && <span className="text-xs text-ink-3"> · {fmtNumber(Number(l.quantity), 2)} {l.source === 'OVERTIME' || l.source === 'LATE' ? t('payroll.hoursShort') : t('payroll.daysShort')}</span>
+                    )}
                   </span>
                   <span className="tabular">{fmtMoney(l.amount, slip.currency)}</span>
                 </li>

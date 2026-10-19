@@ -30,6 +30,8 @@ export interface Me {
     company: { name: string; nameAr: string | null; baseCurrency: string; timezone: string; dateFormat: string; locale: string };
     department: { name: string; nameAr: string | null } | null;
     position: { title: string; titleAr: string | null } | null;
+    overtimeEligible: boolean | null;
+    grade: { overtimeEligible: boolean } | null;
     _count: { reports: number };
   };
 }

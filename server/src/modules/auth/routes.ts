@@ -146,6 +146,7 @@ r.get('/me', { summary: 'Current user, roles, permissions and employee summary' 
           id: true, employeeNo: true, firstName: true, lastName: true, firstNameAr: true, lastNameAr: true, photoPath: true,
           companyId: true, company: { select: { name: true, nameAr: true, baseCurrency: true, timezone: true, dateFormat: true, locale: true } },
           department: { select: { name: true, nameAr: true } }, position: { select: { title: true, titleAr: true } },
+          overtimeEligible: true, grade: { select: { overtimeEligible: true } },
           _count: { select: { reports: true } },
         },
       },

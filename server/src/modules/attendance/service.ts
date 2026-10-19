@@ -1,9 +1,9 @@
 import { Db, prisma, Tx } from '../../lib/prisma';
 import { badRequest, notFound, unprocessable } from '../../lib/errors';
-import { addDays, isoDate, localDateOf, toDateOnly } from '../../lib/dates';
+import { addDays, isoDate, localDateOf, toDateOnly, zonedTimeToUtc } from '../../lib/dates';
 import { audit } from '../../lib/audit';
 import { employeeCalendar } from './calendar';
-import { computeDay, distanceMeters } from './calc';
+import { computeDay, distanceMeters, shiftWindow } from './calc';
 import { assertPayrollOpen } from '../payroll/locks';
 import { registerWorkflowHandler, submitForApproval } from '../workflow/engine';
 
@@ -13,17 +13,26 @@ async function employeeContext(db: Db, employeeId: string) {
     select: {
       id: true, companyId: true, firstName: true, lastName: true, status: true, deletedAt: true, departmentId: true, branchId: true,
       branch: { select: { timezone: true } },
-      company: { select: { timezone: true, attendancePolicy: true } },
+      overtimeEligible: true,
+      grade: { select: { overtimeEligible: true } },
+      company: { select: { timezone: true, attendancePolicy: true, payrollSettings: { select: { nightOvertimeStart: true, nightOvertimeEnd: true } } } },
     },
   });
   if (!emp || emp.deletedAt) throw notFound('Employee');
   const policy = emp.company.attendancePolicy ?? { minOvertimeMinutes: 30, halfDayThresholdMinutes: 240, allowMobileCheckIn: true, allowWebCheckIn: true, geofenceLat: null, geofenceLng: null, geofenceRadiusMeters: null, overtimeRequiresApproval: true };
-  return { emp, timeZone: emp.branch?.timezone || emp.company.timezone, policy };
+  const ps = emp.company.payrollSettings;
+  const nightWindow = { start: ps?.nightOvertimeStart ?? '22:00', end: ps?.nightOvertimeEnd ?? '04:00' };
+  return { emp, timeZone: emp.branch?.timezone || emp.company.timezone, policy, nightWindow, overtimeEligible: isOvertimeEligible(emp) };
+}
+
+/** Employee override, else the job grade's setting, else eligible. */
+export function isOvertimeEligible(emp: { overtimeEligible: boolean | null; grade?: { overtimeEligible: boolean } | null }) {
+  return emp.overtimeEligible ?? emp.grade?.overtimeEligible ?? true;
 }
 
 /** Recomputes derived fields (worked/late/early/overtime/status) of one day's record. */
-export async function recalculateRecord(db: Db, employeeId: string, date: Date) {
-  const { timeZone, policy } = await employeeContext(db, employeeId);
+export async function recalculateRecord(db: Db, employeeId: string, date: Date, now = new Date()) {
+  const { timeZone, policy, nightWindow } = await employeeContext(db, employeeId);
   const record = await db.attendanceRecord.findUnique({ where: { employeeId_date: { employeeId, date } } });
   if (!record) return null;
   const [day] = await employeeCalendar(employeeId, date, date, db);
@@ -37,7 +46,9 @@ export async function recalculateRecord(db: Db, employeeId: string, date: Date) 
     isWorkingDay: day.isWorkingDay,
     isHoliday: !!day.holiday,
     policy,
-    dayClosed: date < addDays(localDateOf(new Date(), timeZone), -1) || (date < localDateOf(new Date(), timeZone) && !isOvernight(day.shift)),
+    nightWindow,
+    // A lone check-in stays "in progress" until the employee's own shift has ended (plus a grace period).
+    dayClosed: now >= dayClosesAt(date, day.shift, timeZone),
   });
   const approvedOt = await approvedOvertimeFor(db, employeeId, date);
   return db.attendanceRecord.update({
@@ -212,7 +223,8 @@ registerWorkflowHandler('ATTENDANCE_CORRECTION', {
 export async function requestOvertime(input: { employeeId: string; date: string; minutes: number; reason: string }, requesterUserId: string) {
   const date = toDateOnly(input.date);
   return prisma.$transaction(async (tx) => {
-    const { emp } = await employeeContext(tx, input.employeeId);
+    const { emp, overtimeEligible } = await employeeContext(tx, input.employeeId);
+    if (!overtimeEligible) throw unprocessable(`${emp.firstName} ${emp.lastName} is not eligible for overtime (managerial grade). Overtime cannot be requested.`, { code: 'OVERTIME_NOT_ELIGIBLE' });
     await assertPayrollOpen(emp.id, date, tx);
     const ot = await tx.overtimeRequest.create({ data: { employeeId: emp.id, date, minutes: input.minutes, reason: input.reason } });
     await submitForApproval(tx, {
@@ -246,36 +258,90 @@ registerWorkflowHandler('OVERTIME', {
 
 // ── Daily processing ──
 
+/** A check-in without a check-out becomes a missed punch this long after the shift ends (time for late check-outs / overtime). */
+export const MISSED_PUNCH_GRACE_HOURS = 4;
+/** On the first run (no lastClosedDate yet) the job looks back this many days; it never back-fills more than MAX_CATCH_UP_DAYS. */
+const FIRST_RUN_LOOKBACK_DAYS = 14;
+const MAX_CATCH_UP_DAYS = 62;
+
+/** The instant after which a day's attendance can be finalised for a shift (overnight shifts end the next morning). */
+export function dayClosesAt(date: Date, shift: { startTime: string; endTime: string } | null, timeZone: string) {
+  const end = shift ? shiftWindow(date, shift, timeZone).end : zonedTimeToUtc(addDays(date, 1), '00:00', timeZone);
+  return new Date(end.getTime() + MISSED_PUNCH_GRACE_HOURS * 3_600_000);
+}
+
 /**
- * Closes a day: creates ABSENT records for working days with no punches and no approved leave,
- * and flags records that only have one punch as MISSED_PUNCH. Safe to run repeatedly.
+ * Closes one day for one company: a working day with no punches, no leave and no holiday becomes ABSENT;
+ * a check-in without a check-out becomes MISSED_PUNCH once the employee's own shift has ended.
+ * Each employee's shift and weekend pattern is respected. Idempotent: running it again changes nothing.
+ * Employees whose shift has not ended yet are reported as `deferred` and handled by a later run.
  */
-export async function processDay(companyId: string, dateInput: Date | string) {
+export async function processDay(companyId: string, dateInput: Date | string, now = new Date()) {
   const date = toDateOnly(dateInput);
   const employees = await prisma.employee.findMany({
-    where: { companyId, deletedAt: null, status: { in: ['ACTIVE', 'PROBATION'] }, hireDate: { lte: date } },
+    where: {
+      companyId,
+      deletedAt: null,
+      hireDate: { lte: date },
+      OR: [{ status: { in: ['ACTIVE', 'PROBATION'] }, separationDate: null }, { separationDate: { gte: date } }],
+    },
     select: { id: true },
   });
   let absent = 0;
+  let onLeave = 0;
   let missed = 0;
+  let deferred = 0;
   for (const e of employees) {
-    const [day] = await employeeCalendar(e.id, date, date);
+    const [{ timeZone }, [day]] = await Promise.all([employeeContext(prisma, e.id), employeeCalendar(e.id, date, date)]);
     const record = await prisma.attendanceRecord.findUnique({ where: { employeeId_date: { employeeId: e.id, date } } });
+    if (record && (record.checkOut || !record.checkIn)) continue; // complete, or already an absence/leave/holiday record
+    if (now < dayClosesAt(date, day.shift, timeZone)) {
+      deferred++;
+      continue;
+    }
     if (!record) {
       if (!day.isWorkingDay) continue;
-      const leave = await prisma.leaveRequest.findFirst({ where: { employeeId: e.id, status: 'APPROVED', startDate: { lte: date }, endDate: { gte: date } } });
+      const leave = await prisma.leaveRequest.findFirst({ where: { employeeId: e.id, status: 'APPROVED', startDate: { lte: date }, endDate: { gte: date } }, include: { leaveType: true } });
       await prisma.attendanceRecord.create({
-        data: { employeeId: e.id, date, status: leave ? 'ON_LEAVE' : 'ABSENT', source: 'MANUAL', shiftId: day.shift?.id, notes: leave ? 'Leave' : 'No punches recorded' },
+        data: {
+          employeeId: e.id, date, source: 'SYSTEM', shiftId: day.shift?.id,
+          status: leave ? (leave.halfDay ? 'HALF_DAY' : 'ON_LEAVE') : 'ABSENT',
+          notes: leave ? `Leave: ${leave.leaveType.name}` : 'No punches recorded',
+        },
       });
-      if (!leave) absent++;
-    } else if (record.checkIn && !record.checkOut) {
-      await recalculateRecord(prisma, e.id, date);
+      if (leave) onLeave++;
+      else absent++;
+    } else if (record.status !== 'MISSED_PUNCH') {
+      // Open punch whose shift is over: finalise it.
+      await recalculateRecord(prisma, e.id, date, now);
       missed++;
     }
   }
-  return { date: isoDate(date), employees: employees.length, absent, missed };
+  return { date: isoDate(date), employees: employees.length, absent, onLeave, missed, deferred };
 }
 
-function isOvernight(shift: { startTime: string; endTime: string } | null) {
-  return !!shift && shift.endTime <= shift.startTime;
+/**
+ * Closes every unclosed day of a company from the day after `attendanceLastClosedDate` up to yesterday
+ * (company time zone), so a missed run never leaves a day open. `attendanceLastClosedDate` only advances
+ * over days where no employee was deferred (overnight shifts still in progress).
+ */
+export async function closePendingDays(companyId: string, now = new Date()) {
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId }, select: { timezone: true, attendanceLastClosedDate: true, createdAt: true } });
+  const yesterday = addDays(localDateOf(now, company.timezone), -1);
+  let from = company.attendanceLastClosedDate ? addDays(company.attendanceLastClosedDate, 1) : addDays(yesterday, -(FIRST_RUN_LOOKBACK_DAYS - 1));
+  const floor = addDays(yesterday, -(MAX_CATCH_UP_DAYS - 1));
+  if (from < floor) from = floor;
+  const days = [];
+  let lastClosed = company.attendanceLastClosedDate;
+  let contiguous = true;
+  for (let d = from; d <= yesterday; d = addDays(d, 1)) {
+    const result = await processDay(companyId, d, now);
+    days.push(result);
+    if (contiguous && result.deferred === 0) lastClosed = d;
+    else contiguous = false;
+  }
+  if (lastClosed && (!company.attendanceLastClosedDate || lastClosed > company.attendanceLastClosedDate)) {
+    await prisma.company.update({ where: { id: companyId }, data: { attendanceLastClosedDate: lastClosed } });
+  }
+  return { companyId, from: isoDate(from), to: isoDate(yesterday), lastClosedDate: lastClosed ? isoDate(lastClosed) : null, days };
 }

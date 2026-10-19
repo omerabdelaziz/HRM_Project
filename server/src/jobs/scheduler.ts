@@ -4,7 +4,7 @@ import { logger } from '../lib/logger';
 import { env } from '../config/env';
 import { addDays, isoDate, localDateOf, toDateOnly } from '../lib/dates';
 import { processEscalations, remindPendingApprovals } from '../modules/workflow/engine';
-import { processDay } from '../modules/attendance/service';
+import { closePendingDays } from '../modules/attendance/service';
 import { notify, userIdsWithRole } from '../modules/notifications/service';
 import { deliverScheduledReports } from '../modules/reports/routes';
 import { backupDatabase } from './backup';
@@ -20,14 +20,11 @@ async function tracked(type: string, fn: () => Promise<unknown>) {
   }
 }
 
-/** Closes yesterday's attendance for every company, in each company's own time zone. */
-export async function closePreviousDay() {
-  const companies = await prisma.company.findMany({ where: { isActive: true }, select: { id: true, timezone: true } });
+/** Closes every unclosed attendance day for every company (catches up after missed runs). */
+export async function closePreviousDay(now = new Date()) {
+  const companies = await prisma.company.findMany({ where: { isActive: true }, select: { id: true } });
   const out = [];
-  for (const c of companies) {
-    const yesterday = addDays(localDateOf(new Date(), c.timezone), -1);
-    out.push(await processDay(c.id, yesterday));
-  }
+  for (const c of companies) out.push(await closePendingDays(c.id, now));
   return out;
 }
 
@@ -108,7 +105,8 @@ export async function purgeExpiredData() {
 export function startScheduler() {
   const opts = { timezone: 'UTC' };
   cron.schedule('*/15 * * * *', () => void tracked('APPROVAL_ESCALATIONS', processEscalations), opts);
-  cron.schedule('30 0 * * *', () => void tracked('ATTENDANCE_CLOSE_DAY', closePreviousDay), opts);
+  // Hourly, so overnight shifts are closed soon after they end; idempotent.
+  cron.schedule('20 * * * *', () => void tracked('ATTENDANCE_CLOSE_DAY', () => closePreviousDay()), opts);
   cron.schedule('0 1 * * *', () => void tracked('APPLY_SEPARATIONS', applySeparations), opts);
   cron.schedule('0 2 * * *', () => void tracked('BACKUP', backupDatabase), opts);
   cron.schedule('30 2 * * *', () => void tracked('RETENTION_PURGE', purgeExpiredData), opts);

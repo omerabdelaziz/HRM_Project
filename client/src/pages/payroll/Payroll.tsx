@@ -192,6 +192,7 @@ interface Comp {
   maxAmount: string | null;
   baseCap: string | null;
   isTaxable: boolean;
+  pensionable: boolean;
   includeInRateBase: boolean;
   appliesToAll: boolean;
   eligibility: { categoryCodes?: string[]; nationalities?: string[]; employmentTypeCodes?: string[] } | null;
@@ -266,7 +267,7 @@ function ComponentDialog({ comp, onClose }: { comp: Partial<Comp> | null; onClos
         name: c.name, nameAr: c.nameAr || null, type: c.type, calcType: c.calcType, defaultValue: num(c.defaultValue),
         brackets: c.calcType === 'BRACKET' ? (c.brackets ?? []).map((b) => ({ upTo: b.upTo === null || (b.upTo as unknown) === '' ? null : Number(b.upTo), rate: Number(b.rate) })) : null,
         bracketBase: c.calcType === 'BRACKET' ? c.bracketBase ?? 'TAXABLE' : null,
-        minAmount: num(c.minAmount), maxAmount: num(c.maxAmount), baseCap: num(c.baseCap), isTaxable: !!c.isTaxable, includeInRateBase: !!c.includeInRateBase,
+        minAmount: num(c.minAmount), maxAmount: num(c.maxAmount), baseCap: num(c.baseCap), isTaxable: !!c.isTaxable, pensionable: !!c.pensionable, includeInRateBase: !!c.includeInRateBase,
         appliesToAll: !!c.appliesToAll, eligibility: hasElig ? eligibility : null, sortOrder: Number(c.sortOrder ?? 100), isActive: c.isActive !== false,
       };
       return isNew ? api.post('/payroll/components', { ...body, code: c.code }) : api.put(`/payroll/components/${comp!.id}`, body);
@@ -358,6 +359,7 @@ function ComponentDialog({ comp, onClose }: { comp: Partial<Comp> | null; onClos
             <Switch checked={!!c.appliesToAll} onChange={(v) => set('appliesToAll', v)} label={t('payComponent.appliesToAllLabel')} />
             {c.type === 'EARNING' && <Checkbox label={t('payComponent.taxable')} checked={c.isTaxable !== false} onChange={(e) => set('isTaxable', e.target.checked)} />}
             {c.type === 'EARNING' && <Checkbox label={t('payComponent.inRateBase')} checked={!!c.includeInRateBase} onChange={(e) => set('includeInRateBase', e.target.checked)} />}
+            {c.type === 'EARNING' && <Checkbox label={t('payComponent.pensionable')} checked={!!c.pensionable} onChange={(e) => set('pensionable', e.target.checked)} />}
             <Checkbox label={t('common.active')} checked={c.isActive !== false} onChange={(e) => set('isActive', e.target.checked)} />
           </div>
           <FormGrid cols={3}>
@@ -380,6 +382,16 @@ function ComponentDialog({ comp, onClose }: { comp: Partial<Comp> | null; onClos
   );
 }
 
+type SchemeKey = 'GPSSA_OLD' | 'GPSSA_NEW' | 'ADPF_OLD' | 'ADPF_NEW';
+interface PensionRules {
+  minBase: number;
+  employerRate: number;
+  privateSector: boolean;
+  subsidyRate: number;
+  subsidyThreshold: number;
+  schemes: Record<SchemeKey, { employeeRate: number; cap: number | null }>;
+}
+
 interface Settings {
   dailyRateBasis: string;
   rateBase: string;
@@ -387,6 +399,10 @@ interface Settings {
   overtimeMultiplier: string;
   weekendOvertimeMultiplier: string;
   holidayOvertimeMultiplier: string;
+  nightOvertimeMultiplier: string;
+  nightOvertimeStart: string;
+  nightOvertimeEnd: string;
+  pensionRules: PensionRules;
   deductUnpaidLeave: boolean;
   deductAbsence: boolean;
   deductLateMinutes: boolean;
@@ -411,6 +427,7 @@ function PayrollSettings() {
         overtimeMultiplier: Number(s!.overtimeMultiplier),
         weekendOvertimeMultiplier: Number(s!.weekendOvertimeMultiplier),
         holidayOvertimeMultiplier: Number(s!.holidayOvertimeMultiplier),
+        nightOvertimeMultiplier: Number(s!.nightOvertimeMultiplier),
         bankFileFormat: 'GENERIC_CSV',
       }),
     { invalidate: ['/payroll/settings'] },
@@ -454,8 +471,19 @@ function PayrollSettings() {
             <Field label={t('payrollSettings.otHoliday')}>
               <Input disabled={disabled} type="number" step="0.05" value={s.holidayOvertimeMultiplier} onChange={(e) => set('holidayOvertimeMultiplier', e.target.value)} />
             </Field>
+            <Field label={t('payrollSettings.otNight')} hint={t('payrollSettings.otNightHint')}>
+              <Input disabled={disabled} type="number" step="0.05" value={s.nightOvertimeMultiplier} onChange={(e) => set('nightOvertimeMultiplier', e.target.value)} />
+            </Field>
+            <Field label={t('payrollSettings.nightStart')}>
+              <Input disabled={disabled} type="time" value={s.nightOvertimeStart} onChange={(e) => set('nightOvertimeStart', e.target.value)} />
+            </Field>
+            <Field label={t('payrollSettings.nightEnd')}>
+              <Input disabled={disabled} type="time" value={s.nightOvertimeEnd} onChange={(e) => set('nightOvertimeEnd', e.target.value)} />
+            </Field>
           </FormGrid>
+          <p className="text-xs text-ink-3">{t('payrollSettings.otEligibilityHint')}</p>
         </FormSection>
+        <PensionRulesSection rules={s.pensionRules} disabled={disabled} onChange={(r) => set('pensionRules', r)} />
         <FormSection title={t('payrollSettings.deductions')}>
           <div className="flex flex-col gap-3">
             <Switch disabled={disabled} checked={s.deductUnpaidLeave} onChange={(v) => set('deductUnpaidLeave', v)} label={t('payrollSettings.deductUnpaid')} />
@@ -520,5 +548,58 @@ function Currencies() {
         <DataTable rows={rates} rowKey={(x) => x.id} dense empty={{ title: t('payroll.noRates') }} columns={[{ key: 'pair', header: t('payroll.pair'), cell: (x) => `${x.fromCurrency} → ${x.toCurrency}` }, { key: 'rate', header: t('payComponent.rate'), align: 'end', cell: (x) => fmtNumber(Number(x.rate), 4) }, { key: 'date', header: t('common.date'), cell: (x) => fmtDate(x.date) }]} />
       </Card>
     </div>
+  );
+}
+
+/** Statutory pension rates, caps and the GPSSA subsidy (UAE defaults, editable). */
+function PensionRulesSection({ rules, disabled, onChange }: { rules: PensionRules; disabled: boolean; onChange: (r: PensionRules) => void }) {
+  const { t } = useTranslation();
+  const num = (v: string) => (v === '' ? 0 : Number(v));
+  const setScheme = (k: SchemeKey, patch: Partial<PensionRules['schemes'][SchemeKey]>) => onChange({ ...rules, schemes: { ...rules.schemes, [k]: { ...rules.schemes[k], ...patch } } });
+  return (
+    <FormSection title={t('payrollSettings.pension')} description={t('payrollSettings.pensionHint')}>
+      <FormGrid cols={3}>
+        <Field label={t('payrollSettings.pensionEmployerRate')}>
+          <Input disabled={disabled} type="number" step="0.5" value={rules.employerRate} onChange={(e) => onChange({ ...rules, employerRate: num(e.target.value) })} />
+        </Field>
+        <Field label={t('payrollSettings.pensionMinBase')}>
+          <Input disabled={disabled} type="number" step="100" value={rules.minBase} onChange={(e) => onChange({ ...rules, minBase: num(e.target.value) })} />
+        </Field>
+        <div />
+        <Field label={t('payrollSettings.pensionSubsidyRate')}>
+          <Input disabled={disabled} type="number" step="0.5" value={rules.subsidyRate} onChange={(e) => onChange({ ...rules, subsidyRate: num(e.target.value) })} />
+        </Field>
+        <Field label={t('payrollSettings.pensionSubsidyThreshold')}>
+          <Input disabled={disabled} type="number" step="500" value={rules.subsidyThreshold} onChange={(e) => onChange({ ...rules, subsidyThreshold: num(e.target.value) })} />
+        </Field>
+        <div className="flex items-end pb-2">
+          <Switch disabled={disabled} checked={rules.privateSector} onChange={(v) => onChange({ ...rules, privateSector: v })} label={t('payrollSettings.pensionPrivateSector')} />
+        </div>
+      </FormGrid>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-start text-xs text-ink-3">
+              <th className="py-2 text-start font-medium">{t('employees.pensionScheme')}</th>
+              <th className="py-2 text-start font-medium">{t('payrollSettings.pensionEmployeeRate')}</th>
+              <th className="py-2 text-start font-medium">{t('payrollSettings.pensionCap')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(['GPSSA_OLD', 'GPSSA_NEW', 'ADPF_OLD', 'ADPF_NEW'] as SchemeKey[]).map((k) => (
+              <tr key={k} className="border-t border-line">
+                <td className="py-2 pe-3">{t(`employees.pension.${k}`)}</td>
+                <td className="py-2 pe-3">
+                  <Input disabled={disabled} type="number" step="0.5" aria-label={`${t(`employees.pension.${k}`)} – ${t('payrollSettings.pensionEmployeeRate')}`} value={rules.schemes[k].employeeRate} onChange={(e) => setScheme(k, { employeeRate: num(e.target.value) })} />
+                </td>
+                <td className="py-2">
+                  <Input disabled={disabled} type="number" step="1000" placeholder={t('payrollSettings.noCap')} aria-label={`${t(`employees.pension.${k}`)} – ${t('payrollSettings.pensionCap')}`} value={rules.schemes[k].cap ?? ''} onChange={(e) => setScheme(k, { cap: e.target.value === '' ? null : Number(e.target.value) })} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </FormSection>
   );
 }

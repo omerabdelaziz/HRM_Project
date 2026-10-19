@@ -10,6 +10,7 @@ import {
   addAdjustment, calculateRun, cancelRun, createRun, markPaid, payrollSettings, proposeSalary, reconcile, removeAdjustment, reopenRun, submitRun, withdrawRun,
 } from './service';
 import { bankFileCsv, payrollRegisterXlsx, payslipPdf } from './documents';
+import { pensionRulesSchema, resolvePensionRules } from './pension';
 
 const r = createRouter('/api/payroll', 'Payroll');
 export default r;
@@ -38,6 +39,7 @@ const componentSchema = z
     maxAmount: z.coerce.number().nonnegative().nullish(),
     baseCap: z.coerce.number().positive().nullish(),
     isTaxable: z.boolean().default(true),
+    pensionable: z.boolean().default(false),
     includeInRateBase: z.boolean().default(false),
     isRecurring: z.boolean().default(true),
     appliesToAll: z.boolean().default(false),
@@ -92,6 +94,10 @@ const settingsSchema = z.object({
   overtimeMultiplier: z.coerce.number().min(0).max(10),
   weekendOvertimeMultiplier: z.coerce.number().min(0).max(10),
   holidayOvertimeMultiplier: z.coerce.number().min(0).max(10),
+  nightOvertimeMultiplier: z.coerce.number().min(0).max(10),
+  nightOvertimeStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm'),
+  nightOvertimeEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm'),
+  pensionRules: pensionRulesSchema,
   deductUnpaidLeave: z.boolean(),
   deductAbsence: z.boolean(),
   deductLateMinutes: z.boolean(),
@@ -103,14 +109,19 @@ const settingsSchema = z.object({
   companyBankAccount: z.string().max(60).nullish(),
 }).partial();
 
-r.get('/settings', { summary: 'Payroll calculation rules', permission: ['payroll.read', 'paycomponent.manage'], query: z.object({ companyId: z.string().uuid().optional() }) }, async ({ user, query }) =>
-  payrollSettings(prisma, await resolveCompanyId(user, query.companyId)),
-);
+r.get('/settings', { summary: 'Payroll calculation rules', permission: ['payroll.read', 'paycomponent.manage'], query: z.object({ companyId: z.string().uuid().optional() }) }, async ({ user, query }) => {
+  const s = await payrollSettings(prisma, await resolveCompanyId(user, query.companyId));
+  // Always return the effective pension rules (stored values over the UAE defaults).
+  return { ...s, pensionRules: resolvePensionRules(s.pensionRules) };
+});
 
 r.put('/settings', { summary: 'Update payroll calculation rules', permission: 'paycomponent.manage', body: settingsSchema.extend({ companyId: z.string().uuid().optional() }) }, async ({ req, user, body }) => {
   const { companyId: requested, ...data } = body;
   const companyId = await resolveCompanyId(user, requested);
   const before = await payrollSettings(prisma, companyId);
+  if (data.pensionRules && data.pensionRules.minBase > Math.min(...Object.values(data.pensionRules.schemes).map((sc) => sc.cap ?? Infinity))) {
+    throw badRequest('The pension minimum base cannot exceed a scheme cap');
+  }
   const after = await prisma.payrollSettings.update({ where: { companyId }, data });
   const d = diff(before, after);
   if (d.changed) await audit({ userId: user.id, action: 'UPDATE', entity: 'PayrollSettings', entityId: after.id, before: d.before, after: d.after, ip: ipOf(req) });

@@ -12,6 +12,7 @@ import {
   separateEmployee, updateEmployee, updateEmployeeSchema,
 } from './service';
 import { exportEmployees, importEmployees, importTemplate } from './excel';
+import { normalizePhone } from '../../../../shared/validation';
 
 const r = createRouter('/api/employees', 'Employees');
 export default r;
@@ -131,9 +132,9 @@ r.post(
 r.post('/', { summary: 'Create an employee (optionally with a user account)', permission: 'employee.create', body: createEmployeeSchema, status: 201 }, async ({ user, body }) => {
   const companyId = await resolveCompanyId(user, body.companyId);
   if (body.createUserAccount && !hasPermission(user, 'user.manage')) throw forbidden('Creating user accounts requires the user.manage permission');
-  const { employee, temporaryPassword } = await prisma.$transaction((tx) => createEmployee(tx, companyId, body, user));
+  const { employee, temporaryPassword, warnings } = await prisma.$transaction((tx) => createEmployee(tx, companyId, body, user));
   const full = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id }, include: employeeInclude });
-  return { ...presentEmployee(full, user), temporaryPassword };
+  return { ...presentEmployee(full, user), temporaryPassword, warnings };
 });
 
 r.get('/:id', { summary: 'Employee profile', params: idParam }, async ({ user, params }) => {
@@ -149,13 +150,23 @@ r.put('/:id', { summary: 'Update an employee; org changes are recorded in histor
   if ((body.nationalId !== undefined || body.bankAccount !== undefined || body.iban !== undefined) && !hasPermission(user, 'employee.sensitive.read')) {
     throw forbidden('Changing national ID or bank details requires access to sensitive data');
   }
-  await updateEmployee(params.id, body, user);
-  return presentEmployee(await prisma.employee.findUniqueOrThrow({ where: { id: params.id }, include: employeeInclude }), user);
+  const { warnings } = await updateEmployee(params.id, body, user);
+  return { ...presentEmployee(await prisma.employee.findUniqueOrThrow({ where: { id: params.id }, include: employeeInclude }), user), warnings };
 });
 
 /** Fields an employee may change on their own profile via self-service. */
 const selfUpdateSchema = z.object({
-  phone: z.string().trim().max(30).nullish(),
+  phone: z
+    .string()
+    .trim()
+    .max(30)
+    .nullish()
+    .transform((v, ctx) => {
+      if (!v) return null;
+      const e164 = normalizePhone(v);
+      if (!e164) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'validation.phone' });
+      return e164 ?? v;
+    }),
   personalEmail: z.string().trim().toLowerCase().email().nullish(),
   address: z.string().trim().max(500).nullish(),
   maritalStatus: z.enum(['SINGLE', 'MARRIED', 'DIVORCED', 'WIDOWED']).nullish(),

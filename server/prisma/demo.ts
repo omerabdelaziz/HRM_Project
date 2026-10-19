@@ -10,6 +10,7 @@ import { employeeCalendar } from '../src/modules/attendance/calendar';
 import { decide } from '../src/modules/workflow/engine';
 import { proposeSalary, createRun, calculateRun, submitRun, markPaid } from '../src/modules/payroll/service';
 import { addDays, isoDate, toDateOnly, zonedTimeToUtc } from '../src/lib/dates';
+import { luhnValid } from '../../shared/validation';
 import '../src/modules/attendance/service';
 
 // Deterministic PRNG so every demo database looks the same.
@@ -19,6 +20,13 @@ const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)];
 const between = (a: number, b: number) => a + Math.floor(rand() * (b - a + 1));
 
 const DEMO_PASSWORD = 'Demo@12345';
+
+/** A well-formed Emirates ID (784-YYYY-NNNNNNN-C) with a valid Luhn check digit. */
+function emiratesId(year: number, serial: number) {
+  const body = `784${year}${String(serial).padStart(7, '0')}`;
+  for (let c = 0; c <= 9; c++) if (luhnValid(body + c)) return `784-${year}-${String(serial).padStart(7, '0')}-${c}`;
+  throw new Error('unreachable');
+}
 const TZ = 'Asia/Dubai';
 
 const PEOPLE: [string, string, string, string, 'MALE' | 'FEMALE', string][] = [
@@ -77,7 +85,8 @@ export async function seedDemo(db: PrismaClient) {
   const grades = Object.fromEntries(
     await Promise.all(
       [['G1', 'Associate', 1, 4000, 9000], ['G2', 'Specialist', 2, 8000, 16000], ['G3', 'Senior', 3, 14000, 26000], ['G4', 'Manager', 4, 22000, 40000], ['G5', 'Executive', 5, 35000, 80000]].map(
-        async ([code, name, level, min, max]) => [code, await db.jobGrade.create({ data: { companyId: cid, code: code as string, name: name as string, level: level as number, minSalary: min as number, maxSalary: max as number } })],
+        // Managerial and executive grades are not paid overtime.
+        async ([code, name, level, min, max]) => [code, await db.jobGrade.create({ data: { companyId: cid, code: code as string, name: name as string, level: level as number, minSalary: min as number, maxSalary: max as number, overtimeEligible: (level as number) < 4 } })],
       ),
     ),
   );
@@ -117,12 +126,11 @@ export async function seedDemo(db: PrismaClient) {
 
   // ── Pay components (example configuration — adjust to your own policy and local law) ──
   const comp = async (data: Omit<Parameters<typeof db.payComponent.create>[0]['data'], 'companyId' | 'company'>) => db.payComponent.create({ data: { ...data, companyId: cid } as never });
-  const housing = await comp({ code: 'HOUSING', name: 'Housing allowance', nameAr: 'بدل سكن', type: 'EARNING', calcType: 'FIXED', sortOrder: 10 });
+  const housing = await comp({ code: 'HOUSING', name: 'Housing allowance', nameAr: 'بدل سكن', type: 'EARNING', calcType: 'FIXED', pensionable: true, sortOrder: 10 });
   const transport = await comp({ code: 'TRANSPORT', name: 'Transportation allowance', nameAr: 'بدل مواصلات', type: 'EARNING', calcType: 'FIXED', sortOrder: 20 });
   const phone = await comp({ code: 'PHONE', name: 'Phone allowance', nameAr: 'بدل هاتف', type: 'EARNING', calcType: 'FIXED', sortOrder: 30 });
-  await comp({ code: 'COLA', name: 'Cost of living allowance', nameAr: 'بدل غلاء معيشة', type: 'EARNING', calcType: 'PERCENT_OF_BASIC', defaultValue: 5, appliesToAll: true, eligibility: { categoryCodes: ['NATIONAL'] }, sortOrder: 40 });
-  await comp({ code: 'PENSION_EE', name: 'Pension (employee share)', nameAr: 'المعاش - حصة الموظف', type: 'DEDUCTION', calcType: 'PERCENT_OF_BASIC', defaultValue: 5, baseCap: 50000, appliesToAll: true, isTaxable: false, eligibility: { nationalities: ['AE'] }, sortOrder: 100 });
-  await comp({ code: 'PENSION_ER', name: 'Pension (employer share)', nameAr: 'المعاش - حصة صاحب العمل', type: 'EMPLOYER_CONTRIBUTION', calcType: 'PERCENT_OF_BASIC', defaultValue: 12.5, baseCap: 50000, appliesToAll: true, eligibility: { nationalities: ['AE'] }, sortOrder: 110 });
+  await comp({ code: 'COLA', name: 'Cost of living allowance', nameAr: 'بدل غلاء معيشة', type: 'EARNING', calcType: 'PERCENT_OF_BASIC', defaultValue: 5, appliesToAll: true, pensionable: true, eligibility: { categoryCodes: ['NATIONAL'] }, sortOrder: 40 });
+  // Pension (GPSSA/ADPF) is calculated by the statutory engine from each employee's scheme and Payroll → Calculation rules.
   await comp({ code: 'INSURANCE_ER', name: 'Medical insurance (employer)', nameAr: 'التأمين الطبي', type: 'EMPLOYER_CONTRIBUTION', calcType: 'FIXED', defaultValue: 450, appliesToAll: true, sortOrder: 120 });
   await comp({ code: 'INCOME_TAX', name: 'Income tax (example, inactive)', nameAr: 'ضريبة الدخل', type: 'DEDUCTION', calcType: 'BRACKET', bracketBase: 'TAXABLE', brackets: [{ upTo: 10000, rate: 0 }, { upTo: 30000, rate: 5 }, { upTo: null, rate: 10 }], appliesToAll: true, isActive: false, sortOrder: 90 });
   const loan = await comp({ code: 'LOAN', name: 'Salary advance repayment', nameAr: 'سداد سلفة', type: 'DEDUCTION', calcType: 'FIXED', isRecurring: true, sortOrder: 150 });
@@ -181,13 +189,15 @@ export async function seedDemo(db: PrismaClient) {
         {
           firstName: first, lastName: last, firstNameAr: firstAr, lastNameAr: lastAr, email, phone: `+9715${between(0, 9)}${between(1000000, 9999999)}`, gender,
           dateOfBirth: isoDate(new Date(Date.UTC(between(1972, 2000), between(0, 11), between(1, 28)))), nationality: nat, maritalStatus: pick(['SINGLE', 'MARRIED']),
-          nationalId: `784-${between(1970, 2000)}-${between(1000000, 9999999)}-${between(1, 9)}`, address: pick(['Dubai Marina', 'Al Nahda', 'Khalifa City', 'Al Majaz', 'JLT', 'Mirdif']),
+          nationalId: emiratesId(between(1970, 2000), between(1000000, 9999999)), address: pick(['Dubai Marina', 'Al Nahda', 'Khalifa City', 'Al Majaz', 'JLT', 'Mirdif']),
           emergencyContact: { name: `${pick(PEOPLE)[0]} ${last}`, relation: pick(['Spouse', 'Parent', 'Sibling']), phone: `+9715${between(10000000, 99999999)}` },
           branchId: branches[br].id, departmentId: pos.departmentId, positionId: pos.id, gradeId: pos.gradeId, categoryId: cats[isNational ? 'NATIONAL' : 'EXPAT'].id,
           employmentTypeId: types[i % 11 === 10 ? 'CONTRACT' : 'FULL_TIME'].id, costCenterId: null, managerId: mgrIdx === null ? null : created[mgrIdx].id,
           shiftId: shiftCode === 'WH' ? whShift.id : null, hireDate: isoDate(hireDate),
           contractStartDate: isoDate(hireDate), contractEndDate: i % 11 === 10 ? isoDate(addDays(today, between(20, 80))) : null,
           bankName: pick(['Emirates NBD', 'ADCB', 'FAB', 'Mashreq', 'Dubai Islamic Bank']), iban: `AE${between(10, 99)}0${between(10, 99)}${String(between(1e9, 9e9))}${String(between(1e6, 9e6))}`,
+          // Abu Dhabi nationals contribute to ADPF; other UAE nationals default to GPSSA by hire date.
+          ...(isNational && br === 'AUH' ? { pensionScheme: 'ADPF_OLD' as const } : {}),
           createUserAccount: false, roleCodes: [], confirmDuplicate: true,
         },
         adminActor,

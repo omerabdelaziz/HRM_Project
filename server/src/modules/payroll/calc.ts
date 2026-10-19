@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
-import type { PayComponent, PayComponentType, PayrollSettings } from '@prisma/client';
+import type { PayComponent, PayComponentType, PayrollSettings, PensionScheme } from '@prisma/client';
+import { computePension, PENSION_CODES, type PensionRules } from './pension';
 
 const D = (v: Prisma.Decimal.Value | null | undefined) => new Prisma.Decimal(v ?? 0);
 const ZERO = D(0);
@@ -20,7 +21,7 @@ export interface StructureSegment {
 export interface PayrollInput {
   settings: Pick<
     PayrollSettings,
-    | 'dailyRateBasis' | 'rateBase' | 'standardHoursPerDay' | 'overtimeMultiplier' | 'weekendOvertimeMultiplier' | 'holidayOvertimeMultiplier'
+    | 'dailyRateBasis' | 'rateBase' | 'standardHoursPerDay' | 'overtimeMultiplier' | 'weekendOvertimeMultiplier' | 'holidayOvertimeMultiplier' | 'nightOvertimeMultiplier'
     | 'deductUnpaidLeave' | 'deductAbsence' | 'deductLateMinutes' | 'lateDeductionGraceMinutesPerMonth' | 'prorateNewJoiners' | 'roundingDecimals'
   >;
   periodDays: number;
@@ -31,8 +32,11 @@ export interface PayrollInput {
   unpaidLeaveDays: number;
   absentDays: number;
   lateMinutes: number;
-  overtime: { normalMinutes: number; weekendMinutes: number; holidayMinutes: number };
+  /** nightMinutes are working-day overtime minutes inside the night window (paid at the night rate instead of the normal rate). */
+  overtime: { normalMinutes: number; weekendMinutes: number; holidayMinutes: number; nightMinutes?: number };
   adjustments: { type: PayComponentType; code: string; description: string; amount: Prisma.Decimal.Value }[];
+  /** Statutory pension (GPSSA / ADPF). Omit or use scheme NONE for employees outside the pension system. */
+  pension?: { scheme: PensionScheme; rules: PensionRules } | null;
 }
 
 export interface PayslipLineOut {
@@ -123,6 +127,8 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
   };
   let proratedBasic = ZERO;
   const rateBaseFixed = { basic: ZERO, extra: ZERO };
+  // Monthly pension contribution salary of the latest structure: basic + pensionable fixed earnings.
+  let pensionBase = ZERO;
   const structureDeductions: { component: PayComponent; value: Prisma.Decimal; factor: Prisma.Decimal }[] = [];
 
   input.segments.forEach((seg, idx) => {
@@ -131,7 +137,10 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
     proratedBasic = proratedBasic.plus(basic.times(factor));
     addEarning('BASIC', 'Basic salary', 'الراتب الأساسي', basic.times(factor), 0);
     const isLatest = idx === input.segments.length - 1;
-    if (isLatest) rateBaseFixed.basic = basic;
+    if (isLatest) {
+      rateBaseFixed.basic = basic;
+      pensionBase = basic;
+    }
     for (const item of seg.items) {
       const c = item.component;
       if (!c.isActive) continue;
@@ -143,6 +152,7 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
         monthly = clamp(monthly, c);
         addEarning(c.code, c.name, c.nameAr, monthly.times(factor), c.sortOrder);
         if (isLatest && c.includeInRateBase) rateBaseFixed.extra = rateBaseFixed.extra.plus(monthly);
+        if (isLatest && c.pensionable) pensionBase = pensionBase.plus(monthly);
       } else {
         structureDeductions.push({ component: c, value: D(item.amount), factor });
       }
@@ -159,6 +169,7 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
     monthly = clamp(monthly, c);
     if (monthly.gt(0)) addEarning(c.code, c.name, c.nameAr, monthly.times(totalFactor), c.sortOrder);
     if (c.includeInRateBase) rateBaseFixed.extra = rateBaseFixed.extra.plus(monthly);
+    if (c.pensionable) pensionBase = pensionBase.plus(monthly);
   }
 
   // 2. Rates.
@@ -170,6 +181,7 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
   // 3. Overtime.
   const ot = [
     { code: 'OT_NORMAL', name: 'Overtime', nameAr: 'عمل إضافي', minutes: input.overtime.normalMinutes, mult: s.overtimeMultiplier },
+    { code: 'OT_NIGHT', name: 'Night overtime', nameAr: 'عمل إضافي ليلي', minutes: input.overtime.nightMinutes ?? 0, mult: s.nightOvertimeMultiplier },
     { code: 'OT_WEEKEND', name: 'Weekend overtime', nameAr: 'عمل إضافي - عطلة أسبوعية', minutes: input.overtime.weekendMinutes, mult: s.weekendOvertimeMultiplier },
     { code: 'OT_HOLIDAY', name: 'Holiday overtime', nameAr: 'عمل إضافي - عطلة رسمية', minutes: input.overtime.holidayMinutes, mult: s.holidayOvertimeMultiplier },
   ];
@@ -216,8 +228,20 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
   const grossAfterAttendance = grossEarnings.minus(attendanceDeductions);
   const taxableBase = taxableEarnings.minus(attendanceDeductions);
 
-  // 6. Percentage, bracket and fixed deductions / employer contributions.
+  // 6. Statutory pension, then percentage, bracket and fixed deductions / employer contributions.
   const employerLines: PayslipLineOut[] = [];
+  const infoLines: PayslipLineOut[] = [];
+  const pension = input.pension ? computePension(input.pension.scheme, pensionBase, input.pension.rules, Prisma.Decimal.min(totalFactor, 1)) : null;
+  const isPensionComponent = (c: PayComponent) => pension !== null && (PENSION_CODES as readonly string[]).includes(c.code);
+  if (pension) {
+    const base = pension.base.toDecimalPlaces(2);
+    const statutory = (code: string, name: string, nameAr: string, type: PayComponentType, rate: number, amount: Prisma.Decimal, sortOrder: number): PayslipLineOut => ({
+      componentCode: code, name, nameAr, type, source: 'STATUTORY', quantity: base.toNumber(), rate: D(rate), amount: round(amount), sortOrder,
+    });
+    if (pension.employee.gt(0)) deductions.push(statutory('PENSION_EE', 'Pension (employee share)', 'المعاش - حصة الموظف', 'DEDUCTION', pension.employeeRate, pension.employee, 100));
+    if (pension.employer.gt(0)) employerLines.push(statutory('PENSION_ER', 'Pension (employer share)', 'المعاش - حصة صاحب العمل', 'EMPLOYER_CONTRIBUTION', pension.employerRate, pension.employer, 110));
+    if (pension.subsidy.gt(0)) infoLines.push(statutory('PENSION_SUBSIDY', 'Pension (government subsidy)', 'المعاش - دعم الحكومة', 'INFORMATION', pension.subsidyRate, pension.subsidy, 111));
+  }
   const evaluate = (c: PayComponent, value: Prisma.Decimal, factor: Prisma.Decimal): Prisma.Decimal => {
     switch (c.calcType) {
       case 'FIXED':
@@ -252,9 +276,10 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
   }
   for (const { c, amount } of byCode.values()) {
     seen.add(c.code);
+    if (isPensionComponent(c)) continue;
     pushComputed(c, amount, 'STRUCTURE');
   }
-  for (const c of input.globalComponents.filter((g) => g.type !== 'EARNING' && g.isActive && !seen.has(g.code))) {
+  for (const c of input.globalComponents.filter((g) => g.type !== 'EARNING' && g.type !== 'INFORMATION' && g.isActive && !seen.has(g.code) && !isPensionComponent(g))) {
     const value = D(c.defaultValue);
     pushComputed(c, evaluate(c, value, totalFactor), 'STATUTORY');
   }
@@ -264,14 +289,15 @@ export function calculatePayslip(input: PayrollInput): PayrollResult {
     deductions.push({ componentCode: a.code, name: a.description, type: 'DEDUCTION', source: 'ADJUSTMENT', amount: round(D(a.amount)), sortOrder: 800 });
   }
 
-  lines.push(...deductions, ...employerLines);
+  lines.push(...deductions, ...employerLines, ...infoLines);
   const totalDeductions = deductions.reduce((acc, l) => acc.plus(l.amount), ZERO);
   const employerContributions = employerLines.reduce((acc, l) => acc.plus(l.amount), ZERO);
   const netPay = round(grossEarnings.minus(totalDeductions));
   if (netPay.lt(0)) warnings.push('Net pay is negative: deductions exceed earnings');
   if (payableDays < 0) payableDays = 0;
 
-  lines.sort((a, b) => (a.type === b.type ? a.sortOrder - b.sortOrder : ['EARNING', 'DEDUCTION', 'EMPLOYER_CONTRIBUTION'].indexOf(a.type) - ['EARNING', 'DEDUCTION', 'EMPLOYER_CONTRIBUTION'].indexOf(b.type)));
+  const typeOrder = ['EARNING', 'DEDUCTION', 'EMPLOYER_CONTRIBUTION', 'INFORMATION'];
+  lines.sort((a, b) => (a.type === b.type ? a.sortOrder - b.sortOrder : typeOrder.indexOf(a.type) - typeOrder.indexOf(b.type)));
 
   return {
     basicSalary: round(proratedBasic),

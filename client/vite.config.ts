@@ -4,7 +4,7 @@ import path from 'node:path';
 
 export default defineConfig({
   plugins: [react()],
-  resolve: { alias: { '@': path.resolve(__dirname, 'src') } },
+  resolve: { alias: { '@': path.resolve(__dirname, 'src'), '@shared': path.resolve(__dirname, '../shared') } },
   server: {
     port: Number(process.env.VITE_PORT ?? 5310),
     proxy: { '/api': { target: process.env.VITE_API_PROXY ?? 'http://localhost:4100', changeOrigin: false } },
