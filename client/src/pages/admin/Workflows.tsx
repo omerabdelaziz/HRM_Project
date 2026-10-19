@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useApiMutation, useGet } from '@/lib/hooks';
+import { useAuth } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
 import { Checkbox, Field, FormGrid, Input, Select } from '@/components/ui/form';
 import { Alert, Badge, Card, CardHeader, EmptyState, PageHeader, Spinner } from '@/components/ui/display';
@@ -11,7 +12,15 @@ import { EmployeePicker } from '@/components/ui/pickers';
 import { REQUEST_TYPES } from '../approvals/Approvals';
 import { Workflow as PageIcon } from 'lucide-react';
 
-const APPROVERS = ['DIRECT_MANAGER', 'DEPARTMENT_MANAGER', 'BRANCH_MANAGER', 'ROLE', 'USER'];
+const APPROVERS = ['DIRECT_MANAGER', 'MANAGERS_MANAGER', 'DEPARTMENT_MANAGER', 'BRANCH_MANAGER', 'ROLE', 'USER'];
+
+interface Coverage {
+  requestType: string;
+  workflows: number;
+  fullyCovered: boolean;
+  otherwise: 'AUTO_APPROVE' | 'FALLBACK';
+  fallbackRole: string;
+}
 
 interface Step {
   name: string;
@@ -22,6 +31,7 @@ interface Step {
   escalateAfterHours?: number | null;
   escalateToType?: string | null;
   escalateToRoleCode?: string | null;
+  escalateToUserId?: string | null;
   allowSelfApproval?: boolean;
 }
 interface Definition {
@@ -39,6 +49,9 @@ export default function Workflows() {
   const confirm = useConfirm();
   const [editing, setEditing] = useState<Partial<Definition> | null>(null);
   const { data, isLoading } = useGet<Definition[]>('/workflows');
+  const { data: coverage } = useGet<Coverage[]>('/workflows/coverage');
+  const { data: roles = [] } = useGet<{ code: string; name: string }[]>('/roles');
+  const roleName = (code: string) => roles.find((r) => r.code === code)?.name ?? code;
   const deactivate = useApiMutation((id: string) => api.delete(`/workflows/${id}`), { success: t('workflow.deactivated'), invalidate: ['/workflows'] });
   if (isLoading) return <Spinner />;
   return (
@@ -52,17 +65,22 @@ export default function Workflows() {
           </Button>
         }
       />
-      <div className="mb-4">
-        <Alert tone="info">{t('workflow.autoApproveNote')}</Alert>
-      </div>
+      <WorkflowSettings roles={roles} />
       <div className="grid gap-4 lg:grid-cols-2">
         {REQUEST_TYPES.map((type) => {
           const defs = data?.filter((d) => d.requestType === type) ?? [];
+          const cov = coverage?.find((c) => c.requestType === type);
+          const otherwise = cov?.otherwise === 'AUTO_APPROVE' ? t('workflow.otherwiseAuto') : t('workflow.otherwiseFallback', { role: roleName(cov?.fallbackRole ?? 'HR_ADMIN') });
           return (
             <Card key={type}>
               <CardHeader title={t(`requestType.${type}`)} subtitle={defs.length ? undefined : t('workflow.noneConfigured')} />
+              {cov && cov.workflows > 0 && !cov.fullyCovered && (
+                <div className="mb-3">
+                  <Alert tone={cov.otherwise === 'AUTO_APPROVE' ? 'warning' : 'info'}>{t('workflow.partialCoverage', { otherwise })}</Alert>
+                </div>
+              )}
               {defs.length === 0 ? (
-                <EmptyState title={t('workflow.autoApproved')} />
+                cov?.otherwise === 'AUTO_APPROVE' ? <Alert tone="warning">{t('workflow.autoApprovedWarning')}</Alert> : <EmptyState title={otherwise} />
               ) : (
                 <div className="space-y-3">
                   {defs.map((d) => (
@@ -102,6 +120,58 @@ export default function Workflows() {
   );
 }
 
+/** Where requests go when no workflow applies: the fallback approver role, or (per type, opt-in) automatic approval. */
+function WorkflowSettings({ roles }: { roles: { code: string; name: string }[] }) {
+  const { t } = useTranslation();
+  const { can } = useAuth();
+  const { data } = useGet<{ workflowFallbackRole: string; autoApproveRequestTypes: string[] }>('/workflows/settings');
+  const [role, setRole] = useState('HR_ADMIN');
+  const [auto, setAuto] = useState<string[]>([]);
+  useEffect(() => {
+    if (data) {
+      setRole(data.workflowFallbackRole);
+      setAuto(data.autoApproveRequestTypes);
+    }
+  }, [data]);
+  const save = useApiMutation(() => api.put('/workflows/settings', { workflowFallbackRole: role, autoApproveRequestTypes: auto }), { success: t('common.saved'), invalidate: ['/workflows'] });
+  const editable = can('workflow.manage');
+  return (
+    <Card className="mb-4">
+      <CardHeader title={t('workflow.noWorkflowTitle')} subtitle={t('workflow.noWorkflowHint')} />
+      <FormGrid cols={2}>
+        <Field label={t('workflow.fallbackRole')} hint={t('workflow.fallbackRoleHint')}>
+          <Select value={role} disabled={!editable} onChange={(e) => setRole(e.target.value)}>
+            {roles.map((r) => (
+              <option key={r.code} value={r.code}>
+                {r.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label={t('workflow.autoApproveTypes')} hint={t('workflow.autoApproveTypesHint')}>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+            {REQUEST_TYPES.map((x) => (
+              <Checkbox key={x} label={t(`requestType.${x}`)} disabled={!editable} checked={auto.includes(x)} onChange={(e) => setAuto(e.target.checked ? [...auto, x] : auto.filter((y) => y !== x))} />
+            ))}
+          </div>
+        </Field>
+      </FormGrid>
+      {auto.length > 0 && (
+        <div className="mt-3">
+          <Alert tone="warning">{t('workflow.autoApproveRisk')}</Alert>
+        </div>
+      )}
+      {editable && (
+        <div className="mt-4 flex justify-end">
+          <Button variant="primary" loading={save.isPending} onClick={() => save.mutate(undefined)}>
+            {t('common.save')}
+          </Button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function WorkflowDialog({ def, onClose }: { def: Partial<Definition> | null; onClose: () => void }) {
   const { t } = useTranslation();
   const { data: roles = [] } = useGet<{ code: string; name: string }[]>(def ? '/roles' : null);
@@ -137,8 +207,9 @@ function WorkflowDialog({ def, onClose }: { def: Partial<Definition> | null; onC
           userId: s.approverType === 'USER' ? s.userId : null,
           minAmount: s.minAmount === '' || s.minAmount == null ? null : Number(s.minAmount),
           escalateAfterHours: s.escalateAfterHours ? Number(s.escalateAfterHours) : null,
-          escalateToType: s.escalateAfterHours ? s.escalateToType ?? 'DEPARTMENT_MANAGER' : null,
-          escalateToRoleCode: s.escalateToType === 'ROLE' ? s.escalateToRoleCode : null,
+          escalateToType: s.escalateAfterHours ? s.escalateToType ?? 'MANAGERS_MANAGER' : null,
+          escalateToRoleCode: s.escalateAfterHours && s.escalateToType === 'ROLE' ? s.escalateToRoleCode : null,
+          escalateToUserId: s.escalateAfterHours && s.escalateToType === 'USER' ? s.escalateToUserId : null,
           allowSelfApproval: !!s.allowSelfApproval,
         })),
       };
@@ -237,8 +308,8 @@ function WorkflowDialog({ def, onClose }: { def: Partial<Definition> | null; onC
                   </Field>
                   {!!s.escalateAfterHours && (
                     <Field label={t('workflow.escalateTo')}>
-                      <Select value={s.escalateToType ?? 'DEPARTMENT_MANAGER'} onChange={(e) => setStep(i, { escalateToType: e.target.value })}>
-                        {APPROVERS.filter((a) => a !== 'USER').map((a) => (
+                      <Select value={s.escalateToType ?? 'MANAGERS_MANAGER'} onChange={(e) => setStep(i, { escalateToType: e.target.value })}>
+                        {APPROVERS.map((a) => (
                           <option key={a} value={a}>
                             {t(`workflow.approver.${a}`)}
                           </option>
@@ -255,6 +326,11 @@ function WorkflowDialog({ def, onClose }: { def: Partial<Definition> | null; onC
                           </option>
                         ))}
                       </Select>
+                    </Field>
+                  )}
+                  {s.escalateToType === 'USER' && !!s.escalateAfterHours && (
+                    <Field label={t('workflow.escalateUser')}>
+                      <EmployeePicker value={null} onChange={(_, emp) => setStep(i, { escalateToUserId: emp?.user?.id ?? null })} valueLabel={s.escalateToUserId ? t('common.selected') : undefined} />
                     </Field>
                   )}
                 </FormGrid>

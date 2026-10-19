@@ -2,10 +2,11 @@ import { z } from 'zod';
 import { createRouter, idParam, paged, pageQuery, paging } from '../../lib/http';
 import { prisma, Prisma } from '../../lib/prisma';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
-import { audit, ipOf } from '../../lib/audit';
+import { audit, ipOf, sanitizeAuditPayload } from '../../lib/audit';
 import { randomToken } from '../../lib/crypto';
 import { hashPassword } from '../../auth/passwords';
 import { notifySecurityChange } from '../../lib/mailer';
+import { inviteUser, unusablePasswordHash } from '../../lib/invites';
 import { ALL_PERMISSIONS, DataScope, PermissionCode, PERMISSIONS, SCOPE_RANK } from '../../auth/permissions';
 import { AuthUser } from '../../auth/context';
 import { accessibleCompanyIds, assertEmployeeInScope, resolveCompanyId } from '../../auth/scope';
@@ -100,22 +101,41 @@ const userBody = z.object({
   isActive: z.boolean().default(true),
 });
 
-u.post('/', { summary: 'Create a user account (returns a one-time temporary password)', permission: 'user.manage', body: userBody, status: 201 }, async ({ req, user, body }) => {
-  const roles = await grantableRoles(user, body.roleCodes);
-  const companyId = await grantCompany(user, body.companyId);
-  await guardEmployeeLink(user, body.employeeId);
-  if (body.employeeId && (await prisma.user.findUnique({ where: { employeeId: body.employeeId } }))) throw conflict('This employee already has a user account');
-  const password = tempPassword();
-  const created = await prisma.user.create({
-    data: {
-      email: body.email, displayName: body.displayName, employeeId: body.employeeId ?? null, isActive: body.isActive,
-      passwordHash: await hashPassword(password), mustChangePassword: true,
-      roles: { create: roles.map((r) => ({ roleId: r.id, companyId })) },
-    },
-    select: { id: true, email: true, displayName: true },
+u.post(
+  '/',
+  { summary: 'Create a user account: emails a 72-hour invitation link, or returns a one-time temporary password when email is not configured', permission: 'user.manage', body: userBody, status: 201 },
+  async ({ req, user, body }) => {
+    const roles = await grantableRoles(user, body.roleCodes);
+    const companyId = await grantCompany(user, body.companyId);
+    await guardEmployeeLink(user, body.employeeId);
+    if (body.employeeId && (await prisma.user.findUnique({ where: { employeeId: body.employeeId } }))) throw conflict('This employee already has a user account');
+    return prisma.$transaction(async (tx) => {
+      const password = tempPassword();
+      const created = await tx.user.create({
+        data: {
+          email: body.email, displayName: body.displayName, employeeId: body.employeeId ?? null, isActive: body.isActive,
+          passwordHash: await hashPassword(password), mustChangePassword: true,
+          roles: { create: roles.map((r) => ({ roleId: r.id, companyId })) },
+        },
+        select: { id: true, email: true, displayName: true },
+      });
+      const invite = await inviteUser(tx, created, user.id);
+      // With an invitation the temporary password is replaced by one nobody knows; the user sets their own.
+      if (invite) await tx.user.update({ where: { id: created.id }, data: { passwordHash: await unusablePasswordHash() } });
+      await audit({ userId: user.id, action: 'CREATE', entity: 'User', entityId: created.id, after: { ...created, roles: body.roleCodes, invited: !!invite }, ip: ipOf(req) }, tx);
+      return invite ? { ...created, inviteSent: true, inviteExpiresAt: invite.expiresAt } : { ...created, temporaryPassword: password };
+    });
+  },
+);
+
+u.post('/:id/invite', { summary: 'Send a new invitation link (email must be configured)', permission: 'user.manage', params: idParam }, async ({ req, user, params }) => {
+  const target = await guardTarget(user, params.id);
+  return prisma.$transaction(async (tx) => {
+    const invite = await inviteUser(tx, target, user.id);
+    if (!invite) throw badRequest('Email is not configured; reset the password to get a temporary password instead');
+    await audit({ userId: user.id, action: 'INVITE', entity: 'User', entityId: target.id, ip: ipOf(req) }, tx);
+    return { inviteSent: true, inviteExpiresAt: invite.expiresAt };
   });
-  await audit({ userId: user.id, action: 'CREATE', entity: 'User', entityId: created.id, after: { ...created, roles: body.roleCodes }, ip: ipOf(req) });
-  return { ...created, temporaryPassword: password };
 });
 
 u.put('/:id', { summary: 'Update a user account and its roles', permission: 'user.manage', params: idParam, body: userBody.partial().omit({ email: true }) }, async ({ req, user, params, body }) => {
@@ -218,6 +238,14 @@ ro.post('/', { summary: 'Create a custom role', permission: 'role.manage', body:
   return role;
 });
 
+ro.put('/:id/mfa', { summary: 'Require MFA for holders of a role (they enrol at their next sign-in)', permission: 'role.manage', params: idParam, body: z.object({ requireMfa: z.boolean() }) }, async ({ req, user, params, body }) => {
+  const before = await prisma.role.findUnique({ where: { id: params.id } });
+  if (!before) throw notFound('Role');
+  const role = await prisma.role.update({ where: { id: params.id }, data: { requireMfa: body.requireMfa } });
+  await audit({ userId: user.id, action: 'UPDATE', entity: 'Role', entityId: role.id, before: { requireMfa: before.requireMfa }, after: { requireMfa: role.requireMfa }, ip: ipOf(req) });
+  return role;
+});
+
 ro.put('/:id', { summary: 'Update a role and its permissions', permission: 'role.manage', params: idParam, body: roleBody.omit({ code: true }) }, async ({ req, user, params, body }) => {
   const before = await prisma.role.findUnique({ where: { id: params.id }, include: { permissions: { include: { permission: true } } } });
   if (!before) throw notFound('Role');
@@ -262,6 +290,23 @@ auditRouter.get(
       prisma.auditLog.findMany({ where, include: { user: { select: { displayName: true, email: true } } }, orderBy: { createdAt: 'desc' }, ...paging(query) }),
       prisma.auditLog.count({ where }),
     ]);
-    return paged(items, total, query);
+    // Older rows may still contain *Hash / *Enc fields: strip them before they reach the UI.
+    return paged(items.map((i) => ({ ...i, before: sanitizeAuditPayload(i.before), after: sanitizeAuditPayload(i.after) })), total, query);
   },
 );
+
+/** Actions that may appear in the trail (for the filter), merged with the ones actually recorded. */
+const KNOWN_AUDIT_ACTIONS = [
+  'CREATE', 'UPDATE', 'DELETE', 'ARCHIVE', 'UPLOAD', 'LOGIN', 'LOGOUT', 'APPROVE', 'REJECT', 'OVERRIDE_APPROVE', 'OVERRIDE_REJECT',
+  'CALCULATE', 'PAY', 'REOPEN', 'CANCEL', 'SEPARATE', 'DEACTIVATE', 'CORRECTION_APPLIED', 'EXPORT',
+];
+auditRouter.get('/facets', { summary: 'Actions and entities for the audit filters', permission: 'audit.read' }, async () => {
+  const [actions, entities] = await Promise.all([
+    prisma.auditLog.findMany({ distinct: ['action'], select: { action: true } }),
+    prisma.auditLog.findMany({ distinct: ['entity'], select: { entity: true } }),
+  ]);
+  return {
+    actions: [...new Set([...KNOWN_AUDIT_ACTIONS, ...actions.map((a) => a.action)])].sort(),
+    entities: [...new Set(entities.map((e) => e.entity))].sort(),
+  };
+});

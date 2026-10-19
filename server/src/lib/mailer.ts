@@ -20,8 +20,17 @@ export interface Mail {
   attachments?: { filename: string; content: Buffer }[];
 }
 
+/** Whether outgoing email works (SMTP configured). Mutable so tests can exercise the email paths. */
+export const mailPolicy = { configured: !!env.SMTP_HOST };
+
+/** In tests, messages are collected here instead of being sent. */
+export const testOutbox: Mail[] = [];
+
 export async function sendMail(mail: Mail) {
-  if (isTest) return;
+  if (isTest) {
+    testOutbox.push(mail);
+    return;
+  }
   if (!transport) {
     logger.debug({ to: mail.to, subject: mail.subject }, 'Email (SMTP not configured, not sent)');
     return;

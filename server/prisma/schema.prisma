@@ -38,6 +38,10 @@ model Company {
   minEmployeeAge        Int      @default(18)
   // Last attendance day fully closed by the close-day job (absences and missed punches finalised)
   attendanceLastClosedDate DateTime? @db.Date
+  // Requests of a type with no active workflow go to holders of this role (instead of being approved automatically)
+  workflowFallbackRole  String   @default("HR_ADMIN")
+  // Request types explicitly configured to be approved automatically when no workflow applies
+  autoApproveRequestTypes String[] @default([])
   isActive              Boolean  @default(true)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
@@ -220,6 +224,7 @@ model User {
   employee          Employee?                @relation(fields: [employeeId], references: [id])
   roles             UserRole[]
   sessions          Session[]
+  invites           UserInvite[]
   notifications     Notification[]
   notificationPrefs NotificationPreference[]
   approvalTasks     ApprovalTask[]
@@ -236,6 +241,8 @@ model Role {
   name        String
   description String?
   isSystem    Boolean  @default(false)
+  // Users holding this role must enrol MFA before using the app
+  requireMfa  Boolean  @default(false)
   // Data scope the role grants: ALL | COMPANY | BRANCH | DEPARTMENT | TEAM | SELF
   dataScope   String   @default("SELF")
   createdAt   DateTime @default(now())
@@ -292,15 +299,31 @@ model Session {
   @@index([userId])
 }
 
+// One-time link that lets a new user set their password (expires after 72 hours).
+model UserInvite {
+  id          String    @id @default(uuid())
+  userId      String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
 model AuditLog {
   id        String   @id @default(uuid())
   userId    String?
-  action    String // CREATE, UPDATE, DELETE, LOGIN, APPROVE, LOCK …
+  action    String // CREATE, UPDATE, DELETE, LOGIN, APPROVE, LOCK, UPLOAD, OVERRIDE_APPROVE …
   entity    String
   entityId  String?
   before    Json?
   after     Json?
   ip        String?
+  userAgent String?
   createdAt DateTime @default(now())
 
   user User? @relation(fields: [userId], references: [id])

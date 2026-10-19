@@ -29,7 +29,8 @@ async function runFor(year: number, month: number) {
 }
 
 beforeAll(async () => {
-  ctx = await makeCompany();
+  // These tests are about payroll maths, not approvals: inputs that need approval are approved automatically.
+  ctx = await makeCompany({ autoApprove: ['SALARY_CHANGE', 'LEAVE', 'ATTENDANCE_CORRECTION', 'OVERTIME'] });
   const payroll = await makeEmployee(ctx.company.id, { roles: ['PAYROLL_OFFICER'], hireDate: '2020-01-01' });
   const finance = await makeEmployee(ctx.company.id, { roles: ['FINANCE_OFFICER'], hireDate: '2020-01-01' });
   payrollToken = await login(payroll.user.email);

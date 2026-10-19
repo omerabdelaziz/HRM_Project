@@ -24,6 +24,7 @@ import reportRoutes, { savedReportsRouter } from './modules/reports/routes';
 import notificationRoutes, { announcementsRouter } from './modules/notifications/routes';
 import { auditRouter, rolesRouter, usersRouter } from './modules/admin/routes';
 import systemRoutes from './modules/system/routes';
+import { requestContextMiddleware } from './lib/request-context';
 
 export function createApp() {
   const app = express();
@@ -58,6 +59,8 @@ export function createApp() {
     next();
   });
   app.use(cors({ origin: env.CLIENT_ORIGIN.split(','), credentials: true }));
+  // Client IP and user agent for every audit entry written while handling the request.
+  app.use(requestContextMiddleware);
   app.use(express.json({ limit: '2mb' }));
   app.use(cookieParser());
   if (!isTest) {
@@ -79,6 +82,7 @@ export function createApp() {
   app.use('/api/auth/login', limiter(15, 30, 'Too many sign-in attempts. Try again later.'));
   app.use('/api/auth/refresh', limiter(15, 120, 'Too many requests. Try again later.'));
   app.use(['/api/auth/mfa', '/api/auth/change-password'], limiter(15, 10, 'Too many attempts. Try again later.', (req) => req.method === 'GET'));
+  app.use('/api/auth/invite', limiter(15, 20, 'Too many attempts. Try again later.'));
   const exportLimiter = limiter(1, 30, 'Too many exports. Try again shortly.');
   app.get(['/api/employees/export', '/api/reports/:key', '/api/payroll/runs/:id/register', '/api/payroll/runs/:id/bank-file'], exportLimiter);
   app.post('/api/employees/import', exportLimiter);

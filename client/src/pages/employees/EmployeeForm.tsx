@@ -148,6 +148,7 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
         body.confirmDuplicate = confirmDuplicate;
         saved = await api.post<Employee>('/employees', body);
         toast.success(t('employees.created', { no: saved.employeeNo }));
+        if (saved.inviteSent) toast.info(t('users.inviteSent', { email: saved.email }), t('users.inviteSentText'));
         if (saved.temporaryPassword) setCreated(saved);
         else onClose();
       }

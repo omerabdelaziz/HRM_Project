@@ -22,8 +22,9 @@ export async function seedRoles() {
   const perms = await prisma.permission.findMany();
   for (const [code, def] of Object.entries(SYSTEM_ROLES)) {
     if (await prisma.role.findUnique({ where: { code } })) continue;
+    // requireMfa stays false here so test users can sign in without enrolling; the MFA tests turn it on explicitly.
     await prisma.role.create({
-      data: { code, name: def.name, dataScope: def.dataScope, isSystem: true, permissions: { create: def.permissions.map((p) => ({ permissionId: perms.find((x) => x.code === p)!.id })) } },
+      data: { code, name: def.name, dataScope: def.dataScope, isSystem: true, requireMfa: false, permissions: { create: def.permissions.map((p) => ({ permissionId: perms.find((x) => x.code === p)!.id })) } },
     });
   }
   for (const [code, name] of [['AED', 'UAE Dirham'], ['USD', 'US Dollar']]) {
@@ -32,12 +33,13 @@ export async function seedRoles() {
 }
 
 /** A company with one branch/department, a Mon–Fri 09:00–18:00 default shift, annual + unpaid leave and payroll settings. */
-export async function makeCompany(overrides: { weekendDays?: number[] } = {}) {
+export async function makeCompany(overrides: { weekendDays?: number[]; autoApprove?: string[] } = {}) {
   await seedRoles();
   const code = `C${uid()}`.toUpperCase();
   const company = await prisma.company.create({
     data: {
       code, name: `Test Co ${code}`, baseCurrency: 'AED', timezone: 'Asia/Dubai', weekendDays: overrides.weekendDays ?? [0, 6], employeeNoPrefix: 'T', employeeNoPadding: 4, probationMonths: 0,
+      autoApproveRequestTypes: overrides.autoApprove ?? [],
       payrollSettings: { create: { dailyRateBasis: 'FIXED_30', overtimeMultiplier: 1.25 } },
       attendancePolicy: { create: { minOvertimeMinutes: 30, overtimeRequiresApproval: false } },
     },

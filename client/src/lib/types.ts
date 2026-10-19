@@ -60,6 +60,7 @@ export interface Employee {
   user?: { id: string; email: string; isActive: boolean; lastLoginAt: string | null; roles: { role: { code: string; name: string } }[] } | null;
   _count?: { reports: number; documents: number };
   temporaryPassword?: string;
+  inviteSent?: boolean;
   /** Non-blocking checks returned after saving (e.g. manager in another department). */
   warnings?: { code: string; field: string; message: string }[];
 }

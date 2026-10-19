@@ -32,6 +32,7 @@ export const PERMISSIONS = {
   // Workflow
   'approval.act': ['workflow', 'Act on approval tasks assigned to me'],
   'approval.read.all': ['workflow', 'View all approval requests'],
+  'approval.override': ['workflow', 'Approve or reject any pending request as an override'],
   'workflow.manage': ['workflow', 'Configure approval workflows'],
   // Payroll
   'payroll.read': ['payroll', 'View payroll runs and payslips'],
@@ -63,16 +64,18 @@ const READ_ONLY = ALL_PERMISSIONS.filter((p) => p.endsWith('.read') || p === 'ap
 
 export const SYSTEM_ROLES: Record<
   string,
-  { name: string; description: string; dataScope: DataScope; permissions: PermissionCode[] }
+  { name: string; description: string; dataScope: DataScope; permissions: PermissionCode[]; requireMfa?: boolean }
 > = {
   SUPER_ADMIN: {
     name: 'Super Administrator',
+    requireMfa: true,
     description: 'Full access to every module and setting',
     dataScope: 'ALL',
     permissions: ALL_PERMISSIONS,
   },
   HR_ADMIN: {
     name: 'HR Administrator',
+    requireMfa: true,
     description: 'Administers HR data, configuration and users',
     dataScope: 'COMPANY',
     permissions: ALL_PERMISSIONS.filter(
@@ -81,6 +84,7 @@ export const SYSTEM_ROLES: Record<
   },
   HR_MANAGER: {
     name: 'HR Manager',
+    requireMfa: true,
     description: 'Manages employees, attendance and leave; approves HR requests',
     dataScope: 'COMPANY',
     permissions: [
@@ -94,6 +98,7 @@ export const SYSTEM_ROLES: Record<
   },
   PAYROLL_OFFICER: {
     name: 'Payroll Officer',
+    requireMfa: true,
     description: 'Prepares and calculates payroll',
     dataScope: 'COMPANY',
     permissions: [
@@ -123,6 +128,7 @@ export const SYSTEM_ROLES: Record<
   },
   FINANCE_OFFICER: {
     name: 'Finance Officer',
+    requireMfa: true,
     description: 'Reviews, approves and pays payroll',
     dataScope: 'COMPANY',
     permissions: [

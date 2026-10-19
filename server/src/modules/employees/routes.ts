@@ -132,9 +132,9 @@ r.post(
 r.post('/', { summary: 'Create an employee (optionally with a user account)', permission: 'employee.create', body: createEmployeeSchema, status: 201 }, async ({ user, body }) => {
   const companyId = await resolveCompanyId(user, body.companyId);
   if (body.createUserAccount && !hasPermission(user, 'user.manage')) throw forbidden('Creating user accounts requires the user.manage permission');
-  const { employee, temporaryPassword, warnings } = await prisma.$transaction((tx) => createEmployee(tx, companyId, body, user));
+  const { employee, temporaryPassword, inviteSent, warnings } = await prisma.$transaction((tx) => createEmployee(tx, companyId, body, user));
   const full = await prisma.employee.findUniqueOrThrow({ where: { id: employee.id }, include: employeeInclude });
-  return { ...presentEmployee(full, user), temporaryPassword, warnings };
+  return { ...presentEmployee(full, user), temporaryPassword, inviteSent, warnings };
 });
 
 r.get('/:id', { summary: 'Employee profile', params: idParam }, async ({ user, params }) => {

@@ -11,6 +11,7 @@ import { badRequest, unauthorized } from '../../lib/errors';
 import { signAccessToken } from '../../middleware/auth';
 import { audit, ipOf } from '../../lib/audit';
 import { hashPassword, passwordSchema } from '../../auth/passwords';
+import { findValidInvite } from '../../lib/invites';
 import { mfaSetupRequired } from '../../auth/context';
 import { notifySecurityChange } from '../../lib/mailer';
 
@@ -237,3 +238,28 @@ r.get('/sessions', { summary: 'List own active sessions' }, async ({ user }) => 
 r.delete('/sessions/:id', { summary: 'Sign out one of own sessions', params: z.object({ id: z.string().uuid() }) }, async ({ user, params }) => {
   await prisma.session.updateMany({ where: { id: params.id, userId: user.id }, data: { revokedAt: new Date() } });
 });
+
+// ── Invitations (public: the token is the credential) ──
+
+r.get('/invite', { summary: 'Check an invitation link', public: true, query: z.object({ token: z.string().min(20).max(200) }) }, async ({ query }) => {
+  const invite = await findValidInvite(query.token);
+  if (!invite) throw badRequest('This invitation link is invalid or has expired. Ask your administrator to send a new one.');
+  return { email: invite.user.email, displayName: invite.user.displayName, expiresAt: invite.expiresAt };
+});
+
+r.post(
+  '/invite/accept',
+  { summary: 'Set a password with an invitation link', public: true, body: z.object({ token: z.string().min(20).max(200), password: passwordSchema }) },
+  async ({ req, body }) => {
+    const invite = await findValidInvite(body.token);
+    if (!invite) throw badRequest('This invitation link is invalid or has expired. Ask your administrator to send a new one.');
+    await prisma.$transaction(async (tx) => {
+      // Single use: only the first request that marks it used succeeds.
+      const used = await tx.userInvite.updateMany({ where: { id: invite.id, usedAt: null }, data: { usedAt: new Date() } });
+      if (!used.count) throw badRequest('This invitation link has already been used.');
+      await tx.user.update({ where: { id: invite.userId }, data: { passwordHash: await hashPassword(body.password), passwordChangedAt: new Date(), mustChangePassword: false, failedLoginCount: 0, lockedUntil: null } });
+      await audit({ userId: invite.userId, action: 'INVITE_ACCEPTED', entity: 'User', entityId: invite.userId, ip: ipOf(req) }, tx);
+    });
+    return { email: invite.user.email };
+  },
+);

@@ -13,6 +13,7 @@ import { ageOn, capitalizeName, emiratesIdProblem, formatEmiratesId, LEGAL_MIN_A
 import { isCountryCode } from '../../../../shared/countries';
 import { ensureAllBalances } from '../leave/balances';
 import { hashPassword } from '../../auth/passwords';
+import { inviteUser, unusablePasswordHash } from '../../lib/invites';
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 const optStr = (max = 200) => z.string().trim().max(max).nullish().transform((v) => (v === '' ? null : v));
@@ -335,13 +336,14 @@ export async function createEmployee(tx: Tx, companyId: string, input: CreateEmp
   });
 
   let temporaryPassword: string | undefined;
+  let inviteSent = false;
   if (createUserAccount) {
     temporaryPassword = `${randomToken(9)}9a`;
     const roles = await tx.role.findMany({ where: { code: { in: roleCodes.length ? roleCodes : ['EMPLOYEE'] } }, include: roleWithPermissions });
     if (actor) assertCanGrantRoles(actor, roles);
     const existing = await tx.user.findUnique({ where: { email: employee.email } });
     if (existing) throw conflict('A user account with this email already exists');
-    await tx.user.create({
+    const account = await tx.user.create({
       data: {
         email: employee.email,
         displayName: `${employee.firstName} ${employee.lastName}`,
@@ -351,12 +353,18 @@ export async function createEmployee(tx: Tx, companyId: string, input: CreateEmp
         roles: { create: roles.map((r) => ({ roleId: r.id, companyId })) },
       },
     });
+    // Email configured: send a 72-hour invitation instead of showing a temporary password.
+    if (await inviteUser(tx, account, actor?.id ?? null)) {
+      await tx.user.update({ where: { id: account.id }, data: { passwordHash: await unusablePasswordHash() } });
+      temporaryPassword = undefined;
+      inviteSent = true;
+    }
   }
 
   await ensureAllBalances(tx, employee.id);
   await audit({ userId: actor?.id, action: 'CREATE', entity: 'Employee', entityId: employee.id, after: employee }, tx);
   const warnings = await managerWarnings(tx, employee.departmentId, employee.managerId);
-  return { employee, temporaryPassword, warnings };
+  return { employee, temporaryPassword, inviteSent, warnings };
 }
 
 const TRACKED: Record<string, string> = {

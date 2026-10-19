@@ -3,6 +3,7 @@ import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit } from '../../lib/audit';
 import { notify } from '../notifications/service';
 import { toDateOnly } from '../../lib/dates';
+import { addBusinessHours, type BusinessCalendar } from '../../lib/business-time';
 
 export const REQUEST_TYPES = [
   'LEAVE',
@@ -18,7 +19,7 @@ export const REQUEST_TYPES = [
 ] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
-export const APPROVER_TYPES = ['DIRECT_MANAGER', 'DEPARTMENT_MANAGER', 'BRANCH_MANAGER', 'ROLE', 'USER'] as const;
+export const APPROVER_TYPES = ['DIRECT_MANAGER', 'MANAGERS_MANAGER', 'DEPARTMENT_MANAGER', 'BRANCH_MANAGER', 'ROLE', 'USER'] as const;
 export type ApproverType = (typeof APPROVER_TYPES)[number];
 
 type ApprovalRequestRow = Prisma.ApprovalRequestGetPayload<object>;
@@ -44,6 +45,16 @@ function handlerFor(type: string) {
 
 /** Roles whose holders receive requests that would otherwise have no eligible approver. */
 const FALLBACK_ROLES = ['HR_ADMIN', 'SUPER_ADMIN'];
+
+/** Approvers for requests that no workflow covers: holders of the company's fallback role (then super administrators). */
+async function fallbackApprovers(tx: Tx, companyId: string, requesterId: string) {
+  const company = await tx.company.findUnique({ where: { id: companyId }, select: { workflowFallbackRole: true } });
+  for (const roles of [[company?.workflowFallbackRole ?? 'HR_ADMIN'], ['SUPER_ADMIN']]) {
+    const ids = (await usersWithRoles(tx, roles, companyId)).filter((id) => id !== requesterId);
+    if (ids.length) return { ids, role: roles[0] };
+  }
+  return { ids: [], role: company?.workflowFallbackRole ?? 'HR_ADMIN' };
+}
 
 export interface SubmitInput {
   companyId: string;
@@ -78,8 +89,9 @@ function matches(cond: Conditions | null, input: SubmitInput) {
 }
 
 /**
- * Starts an approval for a record. If no workflow is configured for the request type,
- * the request is approved automatically (and that is recorded in its history).
+ * Starts an approval for a record. If no workflow applies, the request goes to the company's fallback
+ * approver role (default HR Administrator). It is approved automatically only when the request type is
+ * explicitly listed in the company's auto-approve setting; both outcomes are recorded in the history.
  */
 export async function submitForApproval(tx: Tx, input: SubmitInput) {
   const definitions = await tx.workflowDefinition.findMany({
@@ -107,12 +119,32 @@ export async function submitForApproval(tx: Tx, input: SubmitInput) {
   await tx.approvalAction.create({ data: { requestId: request.id, stepOrder: 0, actorId: input.requesterId, decision: 'SUBMITTED' } });
 
   if (!definition || !definition.steps.length) {
+    const company = await tx.company.findUnique({ where: { id: input.companyId }, select: { autoApproveRequestTypes: true } });
+    if (company?.autoApproveRequestTypes.includes(input.requestType)) {
+      await tx.approvalAction.create({
+        data: { requestId: request.id, stepOrder: 0, decision: 'APPROVED', comment: 'Approved automatically: this request type is configured to auto-approve when no workflow applies' },
+      });
+      return finalize(tx, request.id, 'APPROVED', null);
+    }
+    const fallback = await fallbackApprovers(tx, input.companyId, input.requesterId);
+    if (!fallback.ids.length) {
+      await tx.approvalAction.create({ data: { requestId: request.id, stepOrder: 1, decision: 'COMMENT', comment: 'No approval workflow is configured and no fallback approver exists; an administrator must decide this request' } });
+      return tx.approvalRequest.update({ where: { id: request.id }, data: { currentStep: 1, stepEnteredAt: new Date() } });
+    }
+    const names = await displayNames(tx, fallback.ids);
     await tx.approvalAction.create({
-      data: { requestId: request.id, stepOrder: 0, decision: 'APPROVED', comment: 'Approved automatically: no approval workflow is configured for this request type' },
+      data: { requestId: request.id, stepOrder: 1, decision: 'COMMENT', comment: `No approval workflow is configured for this request type; routed to the fallback approver (${fallback.role}): ${names}` },
     });
-    return finalize(tx, request.id, 'APPROVED', null);
+    const pending = await tx.approvalRequest.update({ where: { id: request.id }, data: { currentStep: 1, stepEnteredAt: new Date() } });
+    await assignTasks(tx, pending, 1, fallback.ids);
+    return pending;
   }
   return advance(tx, request.id, 1);
+}
+
+async function displayNames(tx: Tx, userIds: string[]) {
+  const users = await tx.user.findMany({ where: { id: { in: userIds } }, select: { displayName: true } });
+  return users.map((u) => u.displayName).join(', ');
 }
 
 /** Moves the request to the first applicable step with order >= fromOrder, or completes it. */
@@ -222,6 +254,28 @@ export async function decide(requestId: string, actorId: string, decision: 'APPR
   });
 }
 
+/**
+ * HR/admin override: decides the current step of any pending request without being an assignee.
+ * A comment is mandatory; the decision is recorded as OVERRIDE_APPROVE / OVERRIDE_REJECT in the request
+ * history and the audit log. Later steps (e.g. Finance for payroll) still apply after an approval.
+ */
+export async function overrideDecision(requestId: string, actorId: string, decision: 'APPROVED' | 'REJECTED', comment: string) {
+  if (!comment?.trim()) throw badRequest('A comment is required for an override');
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "ApprovalRequest" WHERE id = ${requestId} FOR UPDATE`;
+    const request = await tx.approvalRequest.findUnique({ where: { id: requestId } });
+    if (!request) throw notFound('Approval request');
+    if (request.status !== 'PENDING') throw badRequest(`This request is already ${request.status.toLowerCase()}`);
+    if (request.requesterId === actorId) throw forbidden('You cannot override a decision on your own request');
+    const action = decision === 'APPROVED' ? 'OVERRIDE_APPROVE' : 'OVERRIDE_REJECT';
+    await tx.approvalTask.updateMany({ where: { requestId, stepOrder: request.currentStep, status: 'OPEN' }, data: { status: 'SUPERSEDED' } });
+    await tx.approvalAction.create({ data: { requestId, stepOrder: request.currentStep, actorId, decision: action, comment: comment.trim() } });
+    await audit({ userId: actorId, action, entity: request.requestType, entityId: request.entityId, after: { requestId, step: request.currentStep, comment: comment.trim() } }, tx);
+    if (decision === 'REJECTED') return finalize(tx, requestId, 'REJECTED', actorId);
+    return advance(tx, requestId, request.currentStep + 1, actorId);
+  });
+}
+
 /** Cancels a pending request; only its requester (or the caller passing force for admin flows) may do so. */
 export async function cancelRequest(tx: Tx, requestType: RequestType, entityId: string, actorId: string, opts: { force?: boolean; comment?: string } = {}) {
   const request = await tx.approvalRequest.findUnique({ where: { requestType_entityId: { requestType, entityId } } });
@@ -261,6 +315,7 @@ export async function resolveApprovers(
         select: {
           id: true,
           managerId: true,
+          manager: { select: { managerId: true } },
           department: { select: { managerId: true, parent: { select: { managerId: true } } } },
           branch: { select: { managerId: true } },
         },
@@ -270,6 +325,8 @@ export async function resolveApprovers(
   switch (type) {
     case 'DIRECT_MANAGER':
       return userOfEmployee(tx, employee?.managerId);
+    case 'MANAGERS_MANAGER':
+      return userOfEmployee(tx, employee?.manager?.managerId);
     case 'DEPARTMENT_MANAGER': {
       let mgr = employee?.department?.managerId;
       if (mgr === employee?.id) mgr = employee?.department?.parent?.managerId ?? employee?.managerId;
@@ -288,29 +345,52 @@ export async function resolveApprovers(
   }
 }
 
-/** Adds escalation approvers to steps that have waited longer than their escalation threshold. */
+/** Company business calendar for SLA timers: working days and company-wide public holidays. */
+async function businessCalendar(companyId: string): Promise<BusinessCalendar> {
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId }, select: { timezone: true, weekendDays: true } });
+  const holidays = await prisma.holiday.findMany({ where: { companyId, branchId: null }, select: { date: true } });
+  return { timeZone: company.timezone, weekendDays: company.weekendDays, holidays: new Set(holidays.map((h) => h.date.toISOString().slice(0, 10))) };
+}
+
+/** When a step's escalation is due: its threshold counted in business hours from when the step started. */
+export async function escalationDueAt(companyId: string, stepEnteredAt: Date, hours: number) {
+  return addBusinessHours(stepEnteredAt, hours, await businessCalendar(companyId));
+}
+
+/**
+ * Escalates steps that waited longer than their threshold (business hours only). The escalation approvers
+ * (manager's manager, a role or a user) are added to the step alongside the original approvers, notified,
+ * and named in the request history. If the target resolves to nobody, the company's fallback approver is used.
+ */
 export async function processEscalations(now = new Date()) {
   const pending = await prisma.approvalRequest.findMany({
     where: { status: 'PENDING', definitionId: { not: null } },
     include: { definition: { include: { steps: true } }, actions: { where: { decision: 'ESCALATED' } } },
   });
+  const calendars = new Map<string, BusinessCalendar>();
   let escalated = 0;
   for (const req of pending) {
     const step = req.definition?.steps.find((s) => s.order === req.currentStep);
     if (!step?.escalateAfterHours || !step.escalateToType) continue;
     if (req.actions.some((a) => a.stepOrder === req.currentStep)) continue;
-    if (req.stepEnteredAt.getTime() + step.escalateAfterHours * 3_600_000 > now.getTime()) continue;
+    if (!calendars.has(req.companyId)) calendars.set(req.companyId, await businessCalendar(req.companyId));
+    if (addBusinessHours(req.stepEnteredAt, step.escalateAfterHours, calendars.get(req.companyId)!) > now) continue;
     await prisma.$transaction(async (tx) => {
-      const ids = (await resolveApprovers(tx, step.escalateToType as ApproverType, req, step.escalateToRoleCode, step.escalateToUserId)).filter(
-        (id) => id !== req.requesterId,
-      );
+      let ids = (await resolveApprovers(tx, step.escalateToType as ApproverType, req, step.escalateToRoleCode, step.escalateToUserId)).filter((id) => id !== req.requesterId);
+      let via = '';
+      if (!ids.length) {
+        const fallback = await fallbackApprovers(tx, req.companyId, req.requesterId);
+        ids = fallback.ids;
+        via = ' (escalation target not found; used the fallback approver)';
+      }
       const existing = await tx.approvalTask.findMany({ where: { requestId: req.id, stepOrder: req.currentStep }, select: { assigneeId: true } });
       const fresh = ids.filter((id) => !existing.some((e) => e.assigneeId === id));
       if (fresh.length) {
         await tx.approvalTask.createMany({ data: fresh.map((assigneeId) => ({ requestId: req.id, stepOrder: req.currentStep, assigneeId })) });
       }
+      const names = fresh.length ? await displayNames(tx, fresh) : 'no new approver (already assigned)';
       await tx.approvalAction.create({
-        data: { requestId: req.id, stepOrder: req.currentStep, decision: 'ESCALATED', comment: `No decision after ${step.escalateAfterHours}h` },
+        data: { requestId: req.id, stepOrder: req.currentStep, decision: 'ESCALATED', comment: `No decision after ${step.escalateAfterHours} business hours; escalated to ${names}${via}` },
       });
       await notify(fresh, { type: 'APPROVAL_ESCALATED', title: `Escalated: ${req.title}`, body: 'This request has been escalated to you.', link: `/approvals/${req.id}` }, tx);
     });

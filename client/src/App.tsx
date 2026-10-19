@@ -8,6 +8,7 @@ import { EmptyState, Spinner } from './components/ui/display';
 import { Toaster } from './lib/toast';
 import Login from './pages/Login';
 import ChangePassword from './pages/ChangePassword';
+import AcceptInvite from './pages/AcceptInvite';
 
 const MfaSetup = lazy(() => import('./pages/MfaSetup'));
 const Home = lazy(() => import('./pages/Home'));
@@ -57,6 +58,8 @@ function Routed() {
   const location = useLocation();
   const { t } = useTranslation();
   if (loading) return <Spinner className="h-full" />;
+  // The invitation link works whether or not someone is signed in on this browser.
+  if (location.pathname === '/accept-invite') return <AcceptInvite />;
   if (!me) {
     return (
       <Routes>

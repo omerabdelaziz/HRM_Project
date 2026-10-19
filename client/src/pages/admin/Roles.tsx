@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Lock, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import { useApiMutation, useGet } from '@/lib/hooks';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -16,6 +17,7 @@ interface Role {
   name: string;
   description: string | null;
   isSystem: boolean;
+  requireMfa: boolean;
   dataScope: string;
   permissions: string[];
   _count: { users: number };
@@ -44,6 +46,11 @@ export default function Roles() {
     return [...m.entries()];
   }, [perms]);
   const save = useApiMutation(() => api.put(`/roles/${draft!.id}`, { name: draft!.name, description: draft!.description, dataScope: draft!.dataScope, permissions: draft!.permissions }), { invalidate: ['/roles'] });
+  const mfa = useApiMutation((v: { id: string; requireMfa: boolean }) => api.put(`/roles/${v.id}/mfa`, { requireMfa: v.requireMfa }), {
+    success: '',
+    onSuccess: (_r, v) => toast.success(v.requireMfa ? t('roles.mfaOn') : t('roles.mfaOff')),
+    invalidate: ['/roles'],
+  });
   const remove = useApiMutation((id: string) => api.delete(`/roles/${id}`), { success: t('common.deleted'), invalidate: ['/roles'], onSuccess: () => setSelectedId(null) });
   if (isLoading || !draft) return <Spinner />;
   const locked = draft.code === 'SUPER_ADMIN';
@@ -68,7 +75,10 @@ export default function Roles() {
               <li key={r.id}>
                 <button onClick={() => setSelectedId(r.id)} className={cn('flex w-full items-center justify-between rounded-lg px-3 py-2 text-start text-sm', r.id === draft.id ? 'bg-primary-soft text-primary-ink' : 'hover:bg-subtle')}>
                   <span>
-                    <span className="block font-medium">{r.name}</span>
+                    <span className="block font-medium">
+                      {r.name}
+                      {r.requireMfa && <Badge tone="info" className="ms-2 align-middle">{t('roles.mfaBadge')}</Badge>}
+                    </span>
                     <span className="block text-xs text-ink-3">{t('roles.usersCount', { count: r._count.users })}</span>
                   </span>
                   {r.isSystem && <Lock className="h-3.5 w-3.5 text-ink-3" aria-label={t('roles.system')} />}
@@ -96,6 +106,22 @@ export default function Roles() {
               </Select>
             </Field>
           </FormGrid>
+          <div className="mt-4 flex flex-col gap-2 rounded-lg border border-line p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">{t('roles.requireMfa')}</p>
+              <p className="text-xs text-ink-3">{t('roles.requireMfaHint')}</p>
+            </div>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="accent-[rgb(var(--primary))]"
+                checked={!!selected?.requireMfa}
+                disabled={mfa.isPending}
+                onChange={(e) => mfa.mutate({ id: draft.id, requireMfa: e.target.checked })}
+              />
+              {selected?.requireMfa ? t('roles.mfaRequired') : t('roles.mfaOptional')}
+            </label>
+          </div>
           <div className="mt-6 grid gap-6 md:grid-cols-2">
             {modules.map(([mod, list]) => (
               <fieldset key={mod} className="rounded-lg border border-line p-4">

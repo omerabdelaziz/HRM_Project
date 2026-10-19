@@ -19,6 +19,8 @@ export interface AuthUser {
   locale: string;
   mustChangePassword: boolean;
   mfaEnabled: boolean;
+  /** One of the user's roles requires MFA (Role.requireMfa). */
+  mfaRequiredByRole: boolean;
   /** Company selected in the UI (X-Company-Id header), used when a request names no company. */
   preferredCompanyId?: string;
   _employeeWhere?: Prisma.EmployeeWhereInput;
@@ -62,6 +64,7 @@ export async function loadAuthUser(userId: string, sessionId: string): Promise<A
     locale: user.locale,
     mustChangePassword: user.mustChangePassword,
     mfaEnabled: user.mfaEnabled,
+    mfaRequiredByRole: user.roles.some((ur) => ur.role.requireMfa),
   };
 }
 
@@ -72,6 +75,11 @@ export function hasPermission(user: AuthUser, ...codes: PermissionCode[]) {
 /** Permissions that make an account administrative (and subject to the MFA requirement). */
 export const ADMIN_PERMISSIONS: PermissionCode[] = ['user.manage', 'role.manage', 'settings.manage', 'payroll.approve', 'payroll.pay'];
 
+/**
+ * The user must enrol MFA before using the app: one of their roles requires it (Settings → Roles), or the
+ * deployment-wide policy requires it for administrative permissions (MFA_REQUIRED_FOR_ADMINS).
+ */
 export function mfaSetupRequired(user: AuthUser) {
-  return policy.mfaRequiredForAdmins && !user.mfaEnabled && hasPermission(user, ...ADMIN_PERMISSIONS);
+  if (user.mfaEnabled) return false;
+  return user.mfaRequiredByRole || (policy.mfaRequiredForAdmins && hasPermission(user, ...ADMIN_PERMISSIONS));
 }

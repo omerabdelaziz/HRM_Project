@@ -15,7 +15,8 @@
     "db:seed": "tsx --no-experimental-require-module prisma/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "openapi": "tsx --no-experimental-require-module src/scripts/export-openapi.ts",
-    "backup": "tsx --no-experimental-require-module src/scripts/backup.ts"
+    "backup": "tsx --no-experimental-require-module src/scripts/backup.ts",
+    "rehash:national-ids": "tsx --no-experimental-require-module src/scripts/rehash-national-ids.ts"
   },
   "prisma": {
     "seed": "tsx --no-experimental-require-module prisma/seed.ts"

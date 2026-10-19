@@ -36,7 +36,7 @@ export async function seedReference() {
     const existing = await prisma.role.findUnique({ where: { code } });
     if (!existing) {
       await prisma.role.create({
-        data: { code, name: def.name, description: def.description, dataScope: def.dataScope, isSystem: true, permissions: { create: def.permissions.map((p) => ({ permissionId: permId(p) })) } },
+        data: { code, name: def.name, description: def.description, dataScope: def.dataScope, isSystem: true, requireMfa: !!def.requireMfa, permissions: { create: def.permissions.map((p) => ({ permissionId: permId(p) })) } },
       });
     } else if (code === 'SUPER_ADMIN') {
       // Super admin always holds every permission, including ones added by upgrades.

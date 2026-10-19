@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, Check, CircleDot, ExternalLink, X } from 'lucide-react';
+import { ArrowLeft, Check, CircleDot, ExternalLink, ShieldAlert, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { useApiMutation, useGet } from '@/lib/hooks';
@@ -12,9 +12,11 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Field, Textarea } from '@/components/ui/form';
 import { Badge, Card, CardHeader, DescriptionList, ErrorState, Spinner, StatusBadge, Alert } from '@/components/ui/display';
+import { useConfirm } from '@/components/ui/dialog';
 
 interface Detail extends ApprovalRequest {
   canAct: boolean;
+  canOverride: boolean;
   definition: null | { name: string; steps: { order: number; name: string; approverType: string; roleCode: string | null; minAmount: string | null }[] };
   actions: { id: string; stepOrder: number; decision: string; comment: string | null; createdAt: string; actor: { displayName: string } | null }[];
   tasks: { id: string; stepOrder: number; status: string; assignee: { displayName: string } }[];
@@ -45,7 +47,26 @@ export default function ApprovalDetail() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [comment, setComment] = useState('');
+  const confirm = useConfirm();
   const { data: r, isLoading, error, refetch } = useGet<Detail>(`/approvals/requests/${id}`);
+  const override = useApiMutation((v: { decision: 'APPROVED' | 'REJECTED'; comment: string }) => api.post(`/approvals/requests/${id}/override`, v), {
+    success: '',
+    invalidate: ['/approvals', '/leave', '/attendance', '/payroll', '/employees'],
+    onSuccess: () => {
+      toast.success(t('approvals.override.done'), t('approvals.decisionRecorded'));
+      void refetch();
+    },
+  });
+  const askOverride = async (decision: 'APPROVED' | 'REJECTED') => {
+    const res = await confirm({
+      title: decision === 'APPROVED' ? t('approvals.override.approveTitle') : t('approvals.override.rejectTitle'),
+      message: t('approvals.override.confirm'),
+      tone: decision === 'REJECTED' ? 'danger' : 'primary',
+      confirmLabel: decision === 'APPROVED' ? t('approvals.override.approve') : t('approvals.override.reject'),
+      reason: { label: t('approvals.override.comment'), required: true, minLength: 3 },
+    });
+    if (res) override.mutate({ decision, comment: res.reason });
+  };
   const decide = useApiMutation((d: 'approve' | 'reject') => api.post(`/approvals/requests/${id}/${d}`, { comment: comment || undefined }), {
     success: '',
     invalidate: ['/approvals', '/leave', '/attendance', '/payroll', '/employees'],
@@ -126,13 +147,34 @@ export default function ApprovalDetail() {
               </div>
             </Card>
           )}
+          {r.canOverride && !r.canAct && (
+            <Card>
+              <CardHeader title={t('approvals.override.title')} />
+              <Alert tone="warning">{t('approvals.override.hint')}</Alert>
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <Button variant="danger" icon={<X className="h-4 w-4" />} loading={override.isPending && override.variables?.decision === 'REJECTED'} onClick={() => void askOverride('REJECTED')}>
+                  {t('approvals.override.reject')}
+                </Button>
+                <Button icon={<ShieldAlert className="h-4 w-4" />} loading={override.isPending && override.variables?.decision === 'APPROVED'} onClick={() => void askOverride('APPROVED')}>
+                  {t('approvals.override.approve')}
+                </Button>
+              </div>
+            </Card>
+          )}
         </div>
         <Card>
           <CardHeader title={t('approvals.workflow')} subtitle={r.definition?.name ?? t('approvals.noWorkflow')} />
+          {!steps.length && r.status === 'PENDING' && (
+            <p className="mb-6 text-sm text-ink-2">
+              {r.tasks.some((x) => x.status === 'OPEN')
+                ? t('approvals.waitingFor', { names: r.tasks.filter((x) => x.status === 'OPEN').map((x) => x.assignee.displayName).join(', ') })
+                : t('approvals.noApprover')}
+            </p>
+          )}
           {steps.length > 0 && (
             <ol className="mb-6 space-y-2">
               {steps.map((s) => {
-                const done = r.actions.some((a) => a.stepOrder === s.order && a.decision === 'APPROVED');
+                const done = r.actions.some((a) => a.stepOrder === s.order && (a.decision === 'APPROVED' || a.decision === 'OVERRIDE_APPROVE'));
                 const skipped = r.actions.some((a) => a.stepOrder === s.order && a.decision === 'SKIPPED');
                 const current = r.status === 'PENDING' && r.currentStep === s.order;
                 const assignees = r.tasks.filter((x) => x.stepOrder === s.order).map((x) => x.assignee.displayName);
@@ -157,7 +199,7 @@ export default function ApprovalDetail() {
           <ol className="relative space-y-4 border-s border-line ps-5">
             {r.actions.map((a) => (
               <li key={a.id} className="relative text-sm">
-                <CircleDot className={cn('absolute -start-[1.6rem] top-0.5 h-4 w-4 bg-surface', a.decision === 'APPROVED' ? 'text-success' : a.decision === 'REJECTED' ? 'text-danger' : 'text-ink-3')} aria-hidden />
+                <CircleDot className={cn('absolute -start-[1.6rem] top-0.5 h-4 w-4 bg-surface', a.decision === 'APPROVED' || a.decision === 'OVERRIDE_APPROVE' ? 'text-success' : a.decision === 'REJECTED' || a.decision === 'OVERRIDE_REJECT' ? 'text-danger' : 'text-ink-3')} aria-hidden />
                 <p>
                   <span className="font-medium">{t(`approvals.decision.${a.decision}`)}</span>
                   {a.actor && <span className="text-ink-2"> · {a.actor.displayName}</span>}

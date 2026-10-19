@@ -450,6 +450,92 @@
         }
       }
     },
+    "/api/auth/invite": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Check an invitation link",
+        "description": "",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "token",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
+    "/api/auth/invite/accept": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Set a password with an invitation link",
+        "description": "",
+        "security": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 20,
+                    "maxLength": 200
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "[A-Za-z]"
+                  }
+                },
+                "required": [
+                  "token",
+                  "password"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
     "/api/org/companies": {
       "get": {
         "tags": [
@@ -585,6 +671,16 @@
                     "type": "integer",
                     "minimum": 3,
                     "maximum": 10
+                  },
+                  "probationMonths": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 24
+                  },
+                  "minEmployeeAge": {
+                    "type": "integer",
+                    "minimum": 15,
+                    "maximum": 30
                   },
                   "isActive": {
                     "type": "boolean",
@@ -777,6 +873,16 @@
                     "type": "integer",
                     "minimum": 3,
                     "maximum": 10
+                  },
+                  "probationMonths": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 24
+                  },
+                  "minEmployeeAge": {
+                    "type": "integer",
+                    "minimum": 15,
+                    "maximum": 30
                   },
                   "isActive": {
                     "type": "boolean",
@@ -1859,6 +1965,10 @@
                     "nullable": true,
                     "minimum": 0
                   },
+                  "overtimeEligible": {
+                    "type": "boolean",
+                    "default": true
+                  },
                   "companyId": {
                     "type": "string",
                     "format": "uuid"
@@ -1979,6 +2089,10 @@
                     "type": "number",
                     "nullable": true,
                     "minimum": 0
+                  },
+                  "overtimeEligible": {
+                    "type": "boolean",
+                    "default": true
                   }
                 }
               }
@@ -3149,8 +3263,7 @@
                   },
                   "nationality": {
                     "type": "string",
-                    "nullable": true,
-                    "maxLength": 60
+                    "nullable": true
                   },
                   "maritalStatus": {
                     "type": "string",
@@ -3160,6 +3273,15 @@
                       "MARRIED",
                       "DIVORCED",
                       "WIDOWED"
+                    ]
+                  },
+                  "nationalIdType": {
+                    "type": "string",
+                    "nullable": true,
+                    "enum": [
+                      "EMIRATES_ID",
+                      "PASSPORT",
+                      "OTHER"
                     ]
                   },
                   "nationalId": {
@@ -3186,12 +3308,12 @@
                       },
                       "phone": {
                         "type": "string",
+                        "nullable": true,
                         "maxLength": 30
                       }
                     },
                     "required": [
-                      "name",
-                      "phone"
+                      "name"
                     ]
                   },
                   "branchId": {
@@ -3389,6 +3511,20 @@
                     "type": "string",
                     "nullable": true,
                     "maxLength": 50
+                  },
+                  "pensionScheme": {
+                    "type": "string",
+                    "enum": [
+                      "NONE",
+                      "GPSSA_OLD",
+                      "GPSSA_NEW",
+                      "ADPF_OLD",
+                      "ADPF_NEW"
+                    ]
+                  },
+                  "overtimeEligible": {
+                    "type": "boolean",
+                    "nullable": true
                   },
                   "companyId": {
                     "type": "string",
@@ -3944,8 +4080,7 @@
                   },
                   "nationality": {
                     "type": "string",
-                    "nullable": true,
-                    "maxLength": 60
+                    "nullable": true
                   },
                   "maritalStatus": {
                     "type": "string",
@@ -3955,6 +4090,15 @@
                       "MARRIED",
                       "DIVORCED",
                       "WIDOWED"
+                    ]
+                  },
+                  "nationalIdType": {
+                    "type": "string",
+                    "nullable": true,
+                    "enum": [
+                      "EMIRATES_ID",
+                      "PASSPORT",
+                      "OTHER"
                     ]
                   },
                   "nationalId": {
@@ -3981,12 +4125,12 @@
                       },
                       "phone": {
                         "type": "string",
+                        "nullable": true,
                         "maxLength": 30
                       }
                     },
                     "required": [
-                      "name",
-                      "phone"
+                      "name"
                     ]
                   },
                   "branchId": {
@@ -4184,6 +4328,20 @@
                     "type": "string",
                     "nullable": true,
                     "maxLength": 50
+                  },
+                  "pensionScheme": {
+                    "type": "string",
+                    "enum": [
+                      "NONE",
+                      "GPSSA_OLD",
+                      "GPSSA_NEW",
+                      "ADPF_OLD",
+                      "ADPF_NEW"
+                    ]
+                  },
+                  "overtimeEligible": {
+                    "type": "boolean",
+                    "nullable": true
                   },
                   "status": {
                     "type": "string",
@@ -7735,6 +7893,72 @@
         }
       }
     },
+    "/api/approvals/requests/{id}/override": {
+      "post": {
+        "tags": [
+          "Approvals"
+        ],
+        "summary": "Approve or reject the current step of any pending request as an HR/admin override (comment required, audited)",
+        "description": "\n\nRequires permission: approval.override",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED",
+                      "REJECTED"
+                    ]
+                  },
+                  "comment": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "decision",
+                  "comment"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
     "/api/approvals/bulk": {
       "post": {
         "tags": [
@@ -8071,6 +8295,7 @@
                           "type": "string",
                           "enum": [
                             "DIRECT_MANAGER",
+                            "MANAGERS_MANAGER",
                             "DEPARTMENT_MANAGER",
                             "BRANCH_MANAGER",
                             "ROLE",
@@ -8102,6 +8327,7 @@
                           "nullable": true,
                           "enum": [
                             "DIRECT_MANAGER",
+                            "MANAGERS_MANAGER",
                             "DEPARTMENT_MANAGER",
                             "BRANCH_MANAGER",
                             "ROLE",
@@ -8142,6 +8368,153 @@
         },
         "responses": {
           "201": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
+    "/api/workflows/coverage": {
+      "get": {
+        "tags": [
+          "Workflow configuration"
+        ],
+        "summary": "What happens to each request type: routed by a workflow, sent to the fallback approver, or auto-approved",
+        "description": "\n\nRequires permission: workflow.manage or approval.read.all",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "companyId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
+    "/api/workflows/settings": {
+      "get": {
+        "tags": [
+          "Workflow configuration"
+        ],
+        "summary": "Fallback approver and auto-approve settings",
+        "description": "\n\nRequires permission: workflow.manage or approval.read.all",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": false,
+            "name": "companyId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Workflow configuration"
+        ],
+        "summary": "Update the fallback approver role and the request types approved automatically when no workflow applies",
+        "description": "\n\nRequires permission: workflow.manage",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "companyId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "workflowFallbackRole": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 50
+                  },
+                  "autoApproveRequestTypes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "LEAVE",
+                        "ATTENDANCE_CORRECTION",
+                        "OVERTIME",
+                        "PAYROLL",
+                        "SALARY_CHANGE",
+                        "TRANSFER",
+                        "RESIGNATION",
+                        "EXPENSE",
+                        "JOB_OFFER",
+                        "DOCUMENT"
+                      ]
+                    },
+                    "maxItems": 10
+                  }
+                },
+                "required": [
+                  "workflowFallbackRole",
+                  "autoApproveRequestTypes"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": "Success"
           },
           "400": {
@@ -8263,6 +8636,7 @@
                           "type": "string",
                           "enum": [
                             "DIRECT_MANAGER",
+                            "MANAGERS_MANAGER",
                             "DEPARTMENT_MANAGER",
                             "BRANCH_MANAGER",
                             "ROLE",
@@ -8294,6 +8668,7 @@
                           "nullable": true,
                           "enum": [
                             "DIRECT_MANAGER",
+                            "MANAGERS_MANAGER",
                             "DEPARTMENT_MANAGER",
                             "BRANCH_MANAGER",
                             "ROLE",
@@ -8531,6 +8906,10 @@
                     "type": "boolean",
                     "default": true
                   },
+                  "pensionable": {
+                    "type": "boolean",
+                    "default": false
+                  },
                   "includeInRateBase": {
                     "type": "boolean",
                     "default": false
@@ -8726,6 +9105,10 @@
                     "type": "boolean",
                     "default": true
                   },
+                  "pensionable": {
+                    "type": "boolean",
+                    "default": false
+                  },
                   "includeInRateBase": {
                     "type": "boolean",
                     "default": false
@@ -8890,6 +9273,145 @@
                     "nullable": true,
                     "minimum": 0,
                     "maximum": 10
+                  },
+                  "nightOvertimeMultiplier": {
+                    "type": "number",
+                    "nullable": true,
+                    "minimum": 0,
+                    "maximum": 10
+                  },
+                  "nightOvertimeStart": {
+                    "type": "string",
+                    "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+                  },
+                  "nightOvertimeEnd": {
+                    "type": "string",
+                    "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+                  },
+                  "pensionRules": {
+                    "type": "object",
+                    "properties": {
+                      "minBase": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "employerRate": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "privateSector": {
+                        "type": "boolean"
+                      },
+                      "subsidyRate": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "subsidyThreshold": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "schemes": {
+                        "type": "object",
+                        "properties": {
+                          "GPSSA_OLD": {
+                            "type": "object",
+                            "properties": {
+                              "employeeRate": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 100
+                              },
+                              "cap": {
+                                "type": "number",
+                                "nullable": true,
+                                "minimum": 0,
+                                "exclusiveMinimum": true
+                              }
+                            },
+                            "required": [
+                              "employeeRate",
+                              "cap"
+                            ]
+                          },
+                          "GPSSA_NEW": {
+                            "type": "object",
+                            "properties": {
+                              "employeeRate": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 100
+                              },
+                              "cap": {
+                                "type": "number",
+                                "nullable": true,
+                                "minimum": 0,
+                                "exclusiveMinimum": true
+                              }
+                            },
+                            "required": [
+                              "employeeRate",
+                              "cap"
+                            ]
+                          },
+                          "ADPF_OLD": {
+                            "type": "object",
+                            "properties": {
+                              "employeeRate": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 100
+                              },
+                              "cap": {
+                                "type": "number",
+                                "nullable": true,
+                                "minimum": 0,
+                                "exclusiveMinimum": true
+                              }
+                            },
+                            "required": [
+                              "employeeRate",
+                              "cap"
+                            ]
+                          },
+                          "ADPF_NEW": {
+                            "type": "object",
+                            "properties": {
+                              "employeeRate": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 100
+                              },
+                              "cap": {
+                                "type": "number",
+                                "nullable": true,
+                                "minimum": 0,
+                                "exclusiveMinimum": true
+                              }
+                            },
+                            "required": [
+                              "employeeRate",
+                              "cap"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "GPSSA_OLD",
+                          "GPSSA_NEW",
+                          "ADPF_OLD",
+                          "ADPF_NEW"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "minBase",
+                      "employerRate",
+                      "privateSector",
+                      "subsidyRate",
+                      "subsidyThreshold",
+                      "schemes"
+                    ]
                   },
                   "deductUnpaidLeave": {
                     "type": "boolean"
@@ -11414,7 +11936,7 @@
         "tags": [
           "Users"
         ],
-        "summary": "Create a user account (returns a one-time temporary password)",
+        "summary": "Create a user account: emails a 72-hour invitation link, or returns a one-time temporary password when email is not configured",
         "description": "\n\nRequires permission: user.manage",
         "security": [
           {
@@ -11469,6 +11991,45 @@
         },
         "responses": {
           "201": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
+    "/api/users/{id}/invite": {
+      "post": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Send a new invitation link (email must be configured)",
+        "description": "\n\nRequires permission: user.manage",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
             "description": "Success"
           },
           "400": {
@@ -11805,6 +12366,7 @@
                         "leavetype.manage",
                         "approval.act",
                         "approval.read.all",
+                        "approval.override",
                         "workflow.manage",
                         "payroll.read",
                         "payroll.run",
@@ -11836,6 +12398,62 @@
         },
         "responses": {
           "201": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
+    "/api/roles/{id}/mfa": {
+      "put": {
+        "tags": [
+          "Roles & permissions"
+        ],
+        "summary": "Require MFA for holders of a role (they enrol at their next sign-in)",
+        "description": "\n\nRequires permission: role.manage",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "requireMfa": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "requireMfa"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": "Success"
           },
           "400": {
@@ -11930,6 +12548,7 @@
                         "leavetype.manage",
                         "approval.act",
                         "approval.read.all",
+                        "approval.override",
                         "workflow.manage",
                         "payroll.read",
                         "payroll.run",
@@ -12109,6 +12728,34 @@
             "required": false,
             "name": "to",
             "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Missing permission"
+          }
+        }
+      }
+    },
+    "/api/audit/facets": {
+      "get": {
+        "tags": [
+          "Audit"
+        ],
+        "summary": "Actions and entities for the audit filters",
+        "description": "\n\nRequires permission: audit.read",
+        "security": [
+          {
+            "bearerAuth": []
           }
         ],
         "responses": {

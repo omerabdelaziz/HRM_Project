@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Copy, KeyRound, MoreHorizontal, Plus, ShieldOff, Unlock } from 'lucide-react';
+import { Copy, KeyRound, Mail, MoreHorizontal, Plus, ShieldOff, Unlock } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -42,6 +42,7 @@ export default function Users() {
   const { data: roles = [] } = useGet<Role[]>('/roles');
   const list = usePaged<UserRow>('/users', { roleCode: roleCode || undefined });
   const reset = useApiMutation((u: UserRow) => api.post<{ temporaryPassword: string }>(`/users/${u.id}/reset-password`), { success: '', onSuccess: (r, u) => setSecret({ email: u.email, password: r.temporaryPassword }) });
+  const invite = useApiMutation((u: UserRow) => api.post(`/users/${u.id}/invite`), { success: '', onSuccess: (_r, u) => toast.success(t('users.inviteSent', { email: u.email }), t('users.inviteSentText')) });
   const unlock = useApiMutation((id: string) => api.post(`/users/${id}/unlock`), { success: t('users.unlocked'), invalidate: ['/users'] });
   const resetMfa = useApiMutation((id: string) => api.post(`/users/${id}/reset-mfa`), { success: t('users.mfaReset'), invalidate: ['/users'] });
 
@@ -105,6 +106,11 @@ export default function Users() {
                       <MenuItem icon={<KeyRound className="h-4 w-4" />} onClick={async () => (close(), (await confirm({ title: t('users.resetPassword'), message: t('users.resetText', { email: u.email }) })) && reset.mutate(u))}>
                         {t('users.resetPassword')}
                       </MenuItem>
+                      {!u.lastLoginAt && u.isActive && (
+                        <MenuItem icon={<Mail className="h-4 w-4" />} onClick={() => (close(), invite.mutate(u))}>
+                          {t('users.resendInvite')}
+                        </MenuItem>
+                      )}
                       {u.lockedUntil && (
                         <MenuItem icon={<Unlock className="h-4 w-4" />} onClick={() => (close(), unlock.mutate(u.id))}>
                           {t('users.unlock')}
@@ -158,8 +164,18 @@ function UserDialog({ user, roles, onClose, onCreated, isSelf }: { user: UserRow
     setActive(u?.isActive ?? true);
   }
   const save = useApiMutation(
-    () => (isNew ? api.post<{ temporaryPassword: string; email: string }>('/users', { email, displayName, employeeId, roleCodes: codes }) : api.put<{ temporaryPassword?: string; email: string }>(`/users/${u!.id}`, { displayName, employeeId, roleCodes: codes, isActive: active })),
-    { invalidate: ['/users'], onSuccess: (r) => (onClose(), r.temporaryPassword && onCreated(r.email, r.temporaryPassword)) },
+    () => (isNew ? api.post<{ temporaryPassword?: string; inviteSent?: boolean; email: string }>('/users', { email, displayName, employeeId, roleCodes: codes }) : api.put<{ temporaryPassword?: string; inviteSent?: boolean; email: string }>(`/users/${u!.id}`, { displayName, employeeId, roleCodes: codes, isActive: active })),
+    {
+      invalidate: ['/users'],
+      success: '',
+      onSuccess: (r) => {
+        onClose();
+        // With email configured the user gets a 72-hour link; otherwise show the one-time temporary password.
+        if (r.inviteSent) toast.success(t('users.inviteSent', { email: r.email }), t('users.inviteSentText'));
+        else if (r.temporaryPassword) onCreated(r.email, r.temporaryPassword);
+        else toast.success();
+      },
+    },
   );
   const canGrantSuper = me?.roles.includes('SUPER_ADMIN');
   return (

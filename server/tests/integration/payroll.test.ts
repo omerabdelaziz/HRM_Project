@@ -14,7 +14,8 @@ const YEAR = 2026;
 const MONTH = 3; // March 2026: 31 days
 
 beforeAll(async () => {
-  ctx = await makeCompany();
+  // These tests are about payroll maths, not approvals: inputs that need approval are approved automatically.
+  ctx = await makeCompany({ autoApprove: ['SALARY_CHANGE', 'LEAVE', 'ATTENDANCE_CORRECTION', 'OVERTIME'] });
   payroll = await makeEmployee(ctx.company.id, { roles: ['PAYROLL_OFFICER'], hireDate: '2020-01-01' });
   finance = await makeEmployee(ctx.company.id, { roles: ['FINANCE_OFFICER'], hireDate: '2020-01-01' });
   payrollToken = await login(payroll.user.email);
@@ -25,7 +26,7 @@ beforeAll(async () => {
 
   const pension = await prisma.payComponent.create({ data: { companyId: ctx.company.id, code: 'PENSION', name: 'Pension', type: 'DEDUCTION', calcType: 'PERCENT_OF_BASIC', defaultValue: 5, appliesToAll: true } });
   void pension;
-  // Salaries (no SALARY_CHANGE workflow → applied immediately).
+  // Salaries (no SALARY_CHANGE workflow and auto-approve on → applied immediately).
   for (const [e, basic] of [[payroll, 10000], [finance, 12000], [worker, 9000], [joiner, 6000]] as const) {
     const res = await api().post('/api/payroll/salaries').set(auth(payrollToken)).send({
       employeeId: e.employee.id, effectiveFrom: e.employee.hireDate.toISOString().slice(0, 10), basicSalary: basic, currency: 'AED', items: [{ componentId: ctx.housing.id, amount: 3000 }],

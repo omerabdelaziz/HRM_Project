@@ -3,10 +3,10 @@ import { createRouter, dateString, idParam, paged, pageQuery, paging } from '../
 import { prisma, Prisma } from '../../lib/prisma';
 import { hasPermission } from '../../auth/context';
 import { accessibleCompanyIds, resolveCompanyId, assertCompanyAccess } from '../../auth/scope';
-import { badRequest, notFound } from '../../lib/errors';
+import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit, ipOf } from '../../lib/audit';
 import { toDateOnly } from '../../lib/dates';
-import { APPROVER_TYPES, decide, REQUEST_TYPES } from './engine';
+import { APPROVER_TYPES, decide, overrideDecision, REQUEST_TYPES } from './engine';
 
 const r = createRouter('/api/approvals', 'Approvals');
 export default r;
@@ -55,7 +55,7 @@ r.get(
       ...(query.requestType ? { requestType: query.requestType } : {}),
     };
     if (query.view === 'mine') where.requesterId = user.id;
-    else if (query.view === 'handled') where.actions = { some: { actorId: user.id, decision: { in: ['APPROVED', 'REJECTED'] } } };
+    else if (query.view === 'handled') where.actions = { some: { actorId: user.id, decision: { in: ['APPROVED', 'REJECTED', 'OVERRIDE_APPROVE', 'OVERRIDE_REJECT'] } } };
     else {
       if (!hasPermission(user, 'approval.read.all')) throw badRequest('You can only view your own requests');
       where.companyId = await resolveCompanyId(user, query.companyId);
@@ -81,10 +81,17 @@ r.get('/requests/:id', { summary: 'Request detail with full approval history', p
   });
   if (!req) throw notFound('Approval request');
   const involved = req.requesterId === user.id || req.tasks.some((t) => t.assigneeId === user.id);
-  if (!involved && (!hasPermission(user, 'approval.read.all') || !(await accessibleCompanyIds(user)).includes(req.companyId))) throw notFound('Approval request');
+  const oversees = hasPermission(user, 'approval.read.all', 'approval.override') && (await accessibleCompanyIds(user)).includes(req.companyId);
+  if (!involved && !oversees) throw notFound('Approval request');
   const canAct = req.status === 'PENDING' && req.tasks.some((t) => t.assigneeId === user.id && t.status === 'OPEN' && t.stepOrder === req.currentStep);
-  return { ...req, canAct };
+  const canOverride = req.status === 'PENDING' && req.requesterId !== user.id && oversees && mayOverride(user, req.requestType);
+  return { ...req, canAct, canOverride };
 });
+
+/** Overrides need approval.override; payroll runs additionally need payroll.approve (segregation of duties). */
+function mayOverride(user: Parameters<typeof hasPermission>[0], requestType: string) {
+  return hasPermission(user, 'approval.override') && (requestType !== 'PAYROLL' || hasPermission(user, 'payroll.approve'));
+}
 
 const decisionBody = z.object({ comment: z.string().trim().max(2000).optional() });
 
@@ -94,6 +101,22 @@ r.post('/requests/:id/approve', { summary: 'Approve the current step', permissio
 
 r.post('/requests/:id/reject', { summary: 'Reject the request (comment required)', permission: 'approval.act', params: idParam, body: decisionBody }, async ({ user, params, body }) =>
   decide(params.id, user.id, 'REJECTED', body.comment),
+);
+
+r.post(
+  '/requests/:id/override',
+  {
+    summary: 'Approve or reject the current step of any pending request as an HR/admin override (comment required, audited)',
+    permission: 'approval.override',
+    params: idParam,
+    body: z.object({ decision: z.enum(['APPROVED', 'REJECTED']), comment: z.string().trim().min(1, 'validation.required').max(2000) }),
+  },
+  async ({ user, params, body }) => {
+    const req = await prisma.approvalRequest.findUnique({ where: { id: params.id }, select: { companyId: true, requestType: true } });
+    if (!req || !(await accessibleCompanyIds(user)).includes(req.companyId)) throw notFound('Approval request');
+    if (!mayOverride(user, req.requestType)) throw forbidden('Overriding a payroll approval also requires the payroll approval permission');
+    return overrideDecision(params.id, user.id, body.decision, body.comment);
+  },
 );
 
 r.post(
@@ -173,7 +196,10 @@ const stepSchema = z
     allowSelfApproval: z.boolean().default(false),
   })
   .refine((s) => s.approverType !== 'ROLE' || !!s.roleCode, { message: 'roleCode is required for ROLE approvers', path: ['roleCode'] })
-  .refine((s) => s.approverType !== 'USER' || !!s.userId, { message: 'userId is required for USER approvers', path: ['userId'] });
+  .refine((s) => s.approverType !== 'USER' || !!s.userId, { message: 'userId is required for USER approvers', path: ['userId'] })
+  .refine((s) => !s.escalateAfterHours || !!s.escalateToType, { message: 'Choose who the step escalates to', path: ['escalateToType'] })
+  .refine((s) => s.escalateToType !== 'ROLE' || !!s.escalateToRoleCode, { message: 'escalateToRoleCode is required for ROLE escalation', path: ['escalateToRoleCode'] })
+  .refine((s) => s.escalateToType !== 'USER' || !!s.escalateToUserId, { message: 'escalateToUserId is required for USER escalation', path: ['escalateToUserId'] });
 
 const definitionSchema = z.object({
   companyId: z.string().uuid().optional(),
@@ -200,6 +226,51 @@ w.get('/', { summary: 'List workflow definitions', permission: ['workflow.manage
     include: { steps: { orderBy: { order: 'asc' } } },
     orderBy: [{ requestType: 'asc' }, { priority: 'desc' }],
   });
+});
+
+const companyQuery = z.object({ companyId: z.string().uuid().optional() });
+
+w.get(
+  '/coverage',
+  { summary: 'What happens to each request type: routed by a workflow, sent to the fallback approver, or auto-approved', permission: ['workflow.manage', 'approval.read.all'], query: companyQuery },
+  async ({ user, query }) => {
+    const companyId = await resolveCompanyId(user, query.companyId);
+    const [company, defs] = await Promise.all([
+      prisma.company.findUniqueOrThrow({ where: { id: companyId }, select: { workflowFallbackRole: true, autoApproveRequestTypes: true } }),
+      prisma.workflowDefinition.findMany({ where: { companyId, isActive: true, steps: { some: {} } }, select: { requestType: true, conditions: true } }),
+    ]);
+    return REQUEST_TYPES.map((requestType) => {
+      const mine = defs.filter((d) => d.requestType === requestType);
+      // A workflow with conditions may not match every request; those requests fall through to the no-workflow path.
+      const unconditional = mine.some((d) => !d.conditions || Object.keys(d.conditions as object).length === 0);
+      const noWorkflow = company.autoApproveRequestTypes.includes(requestType) ? 'AUTO_APPROVE' : 'FALLBACK';
+      return { requestType, workflows: mine.length, fullyCovered: unconditional, otherwise: noWorkflow, fallbackRole: company.workflowFallbackRole };
+    });
+  },
+);
+
+const settingsSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  workflowFallbackRole: z.string().trim().min(1).max(50),
+  autoApproveRequestTypes: z.array(z.enum(REQUEST_TYPES)).max(REQUEST_TYPES.length),
+});
+
+w.get('/settings', { summary: 'Fallback approver and auto-approve settings', permission: ['workflow.manage', 'approval.read.all'], query: companyQuery }, async ({ user, query }) => {
+  const companyId = await resolveCompanyId(user, query.companyId);
+  return prisma.company.findUniqueOrThrow({ where: { id: companyId }, select: { id: true, workflowFallbackRole: true, autoApproveRequestTypes: true } });
+});
+
+w.put('/settings', { summary: 'Update the fallback approver role and the request types approved automatically when no workflow applies', permission: 'workflow.manage', body: settingsSchema }, async ({ req, user, body }) => {
+  const companyId = await resolveCompanyId(user, body.companyId);
+  if (!(await prisma.role.findUnique({ where: { code: body.workflowFallbackRole } }))) throw badRequest('Unknown role');
+  const before = await prisma.company.findUniqueOrThrow({ where: { id: companyId }, select: { workflowFallbackRole: true, autoApproveRequestTypes: true } });
+  const after = await prisma.company.update({
+    where: { id: companyId },
+    data: { workflowFallbackRole: body.workflowFallbackRole, autoApproveRequestTypes: [...new Set(body.autoApproveRequestTypes)] },
+    select: { id: true, workflowFallbackRole: true, autoApproveRequestTypes: true },
+  });
+  await audit({ userId: user.id, action: 'UPDATE', entity: 'WorkflowSettings', entityId: companyId, before, after, ip: ipOf(req) });
+  return after;
 });
 
 w.post('/', { summary: 'Create a workflow definition', permission: 'workflow.manage', body: definitionSchema, status: 201 }, async ({ req, user, body }) => {

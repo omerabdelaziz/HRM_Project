@@ -129,12 +129,29 @@ describe('leave requests and approval workflow', () => {
     expect(Number((await balance(e.token)).pending)).toBe(0);
   });
 
-  it('auto-approves when no workflow is configured', async () => {
-    const solo = await makeCompany();
+  it('auto-approves without a workflow only when the request type is configured to', async () => {
+    const solo = await makeCompany({ autoApprove: ['LEAVE'] });
     const e = await makeEmployee(solo.company.id, { hireDate: '2020-01-01' });
     const token = await login(e.user.email);
     const res = await api().post('/api/leave/requests').set(auth(token)).send({ leaveTypeId: solo.annual.id, startDate: iso(mondayOf(4)), endDate: iso(mondayOf(4)) });
     expect(res.body.status).toBe('APPROVED');
+    const approval = await prisma.approvalRequest.findUniqueOrThrow({ where: { requestType_entityId: { requestType: 'LEAVE', entityId: res.body.id } }, include: { actions: true } });
+    expect(approval.actions.find((a) => a.decision === 'APPROVED')?.comment).toMatch(/configured to auto-approve/);
+  });
+
+  it('without a workflow, routes to the fallback approver instead of approving', async () => {
+    const solo = await makeCompany();
+    const hr = await makeEmployee(solo.company.id, { roles: ['HR_ADMIN'] });
+    const e = await makeEmployee(solo.company.id, { hireDate: '2020-01-01' });
+    const token = await login(e.user.email);
+    const res = await api().post('/api/leave/requests').set(auth(token)).send({ leaveTypeId: solo.annual.id, startDate: iso(mondayOf(4)), endDate: iso(mondayOf(4)) });
+    expect(res.body.status).toBe('PENDING');
+    const approval = await prisma.approvalRequest.findUniqueOrThrow({ where: { requestType_entityId: { requestType: 'LEAVE', entityId: res.body.id } }, include: { actions: true, tasks: true } });
+    expect(approval.tasks.map((t) => t.assigneeId)).toEqual([hr.user.id]);
+    expect(approval.actions.find((a) => a.decision === 'COMMENT')?.comment).toMatch(/fallback approver \(HR_ADMIN\)/);
+    const hrToken = await login(hr.user.email);
+    const ok = await api().post(`/api/approvals/requests/${approval.id}/approve`).set(auth(hrToken)).send({});
+    expect(ok.body.status).toBe('APPROVED');
   });
 
   it('delegated approvers receive tasks while the delegation is active', async () => {

@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import { Db, prisma, Prisma } from './prisma';
+import { requestContext } from './request-context';
 
 interface AuditEntry {
   userId?: string | null;
@@ -11,16 +12,36 @@ interface AuditEntry {
   ip?: string | null;
 }
 
-const SENSITIVE_KEYS = ['passwordHash', 'mfaSecretEnc', 'bankAccountEnc', 'ibanEnc', 'nationalIdEnc', 'tokenHash'];
+const SECRET_KEYS = new Set(['passwordHash', 'tokenHash', 'mfaSecretEnc', 'deviceApiKeyHash']);
+
+/**
+ * Removes secrets from an audit payload: every `*Hash` field is dropped (keyed hashes of IDs can be
+ * brute-forced) and every `*Enc` field is replaced by its plain name with a "[protected]" marker, so the
+ * trail still shows *that* a national ID or bank detail changed without exposing it. Applied when entries
+ * are written and again when they are read (older rows).
+ */
+export function sanitizeAuditPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeAuditPayload);
+  if (!value || typeof value !== 'object' || value instanceof Date) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (SECRET_KEYS.has(k) || /Hash$/.test(k)) continue;
+    if (/Enc$/.test(k)) {
+      if (v !== null && v !== undefined) out[k.replace(/Enc$/, '')] = '[protected]';
+      continue;
+    }
+    out[k] = sanitizeAuditPayload(v);
+  }
+  return out;
+}
 
 function scrub(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === undefined || value === null) return undefined;
-  return JSON.parse(
-    JSON.stringify(value, (k, v) => (SENSITIVE_KEYS.includes(k) ? (v ? '[encrypted]' : v) : v)),
-  ) as Prisma.InputJsonValue;
+  return sanitizeAuditPayload(JSON.parse(JSON.stringify(value))) as Prisma.InputJsonValue;
 }
 
 export async function audit(entry: AuditEntry, db: Db = prisma) {
+  const ctx = requestContext();
   await db.auditLog.create({
     data: {
       userId: entry.userId ?? null,
@@ -29,7 +50,9 @@ export async function audit(entry: AuditEntry, db: Db = prisma) {
       entityId: entry.entityId ?? null,
       before: scrub(entry.before),
       after: scrub(entry.after),
-      ip: entry.ip ?? null,
+      // Every entry records where it came from, even when the caller did not pass the request.
+      ip: entry.ip ?? ctx?.ip ?? null,
+      userAgent: ctx?.userAgent ?? null,
     },
   });
 }
